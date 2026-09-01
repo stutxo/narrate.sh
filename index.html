@@ -192,6 +192,7 @@
       const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
       const MAX_CHUNK_LENGTH = 420;
       const MAX_WORDS = ${MAX_WORDS};
+      const WEBGPU_BATCH_CHUNKS = 24;
       const WEBGPU_BACKEND = Object.freeze({
         device: "webgpu",
         dtype: "fp32",
@@ -410,7 +411,10 @@
             backend: backend.label,
           });
 
-          for (let index = requestedStartIndex; index < textChunks.length; index += 1) {
+          const batchEndIndex = backend.device === "webgpu"
+            ? Math.min(textChunks.length, requestedStartIndex + WEBGPU_BATCH_CHUNKS)
+            : textChunks.length;
+          for (let index = requestedStartIndex; index < batchEndIndex; index += 1) {
             if (!(await takeCredit(job.id))) return;
             self.postMessage({
               type: "generating",
@@ -434,11 +438,12 @@
               samples,
             }, [samples.buffer]);
           }
-          if (requestedStartIndex < textChunks.length && !(await takeCredit(job.id))) return;
+          if (requestedStartIndex < batchEndIndex && !(await takeCredit(job.id))) return;
 
           self.postMessage({
-            type: "generation-complete",
+            type: batchEndIndex < textChunks.length ? "batch-complete" : "generation-complete",
             jobId: job.id,
+            nextIndex: batchEndIndex,
             total: textChunks.length,
           });
         } catch (error) {
@@ -468,6 +473,7 @@
     const DB_NAME = "narrate.sh";
     const DB_VERSION = 1;
     const SESSION_KEY = "current";
+    const AUDIO_FILE_NAME = "narration.wav";
     const form = document.querySelector("#speech-form");
     const text = document.querySelector("#text");
     const button = document.querySelector("#speak");
@@ -538,31 +544,120 @@
       await transactionDone(transaction);
     }
 
+    async function audioDirectory() {
+      if (!navigator.storage?.getDirectory) {
+        throw new Error("This browser does not support private local audio files.");
+      }
+      return navigator.storage.getDirectory();
+    }
+
+    async function readLegacyChunks() {
+      const database = await openDatabase();
+      const transaction = database.transaction("chunks");
+      return requestResult(transaction.objectStore("chunks").getAll());
+    }
+
+    async function clearLegacyChunks() {
+      const database = await openDatabase();
+      const transaction = database.transaction("chunks", "readwrite");
+      transaction.objectStore("chunks").clear();
+      await transactionDone(transaction);
+    }
+
     async function clearSavedData() {
       const database = await openDatabase();
       const transaction = database.transaction(["session", "chunks"], "readwrite");
       transaction.objectStore("session").clear();
       transaction.objectStore("chunks").clear();
       await transactionDone(transaction);
+
+      if (!navigator.storage?.getDirectory) return;
+      const directory = await audioDirectory();
+      try {
+        await directory.removeEntry(AUDIO_FILE_NAME);
+      } catch (error) {
+        if (error.name !== "NotFoundError") throw error;
+      }
     }
 
-    async function writeStoredChunk(chunk) {
-      const database = await openDatabase();
-      const transaction = database.transaction("chunks", "readwrite");
-      transaction.objectStore("chunks").put(chunk);
-      await transactionDone(transaction);
+    async function writeStoredChunk(chunk, startSample) {
+      const directory = await audioDirectory();
+      const handle = await directory.getFileHandle(AUDIO_FILE_NAME, { create: true });
+      const writable = await handle.createWritable({ keepExistingData: true });
+      const totalSamples = startSample + chunk.sampleCount;
+
+      try {
+        await writable.write({
+          type: "write",
+          position: 44 + startSample * 2,
+          data: chunk.data,
+        });
+        await writable.write({
+          type: "write",
+          position: 0,
+          data: createWavHeader(totalSamples, chunk.sampleRate),
+        });
+        await writable.truncate(44 + totalSamples * 2);
+        await writable.close();
+      } catch (error) {
+        await writable.abort().catch(() => {});
+        throw error;
+      }
+    }
+
+    async function readStoredAudioFile(record) {
+      const directory = await audioDirectory();
+      let handle = null;
+
+      try {
+        handle = await directory.getFileHandle(AUDIO_FILE_NAME);
+        const file = await handle.getFile();
+        if (file.size > 44) return file;
+      } catch (error) {
+        if (error.name !== "NotFoundError") throw error;
+      }
+
+      const chunks = await readLegacyChunks();
+      if (chunks.length === 0) return null;
+      handle ??= await directory.getFileHandle(AUDIO_FILE_NAME, { create: true });
+      const sampleRate = chunks[0].sampleRate || record.sampleRate || 24000;
+      const sampleCount = chunks.reduce((total, chunk) => total + chunk.sampleCount, 0);
+      const writable = await handle.createWritable();
+
+      try {
+        await writable.write(createWavHeader(sampleCount, sampleRate));
+        let position = 44;
+        for (const chunk of chunks) {
+          await writable.write({ type: "write", position, data: chunk.data });
+          position += chunk.data.byteLength;
+        }
+        await writable.close();
+      } catch (error) {
+        await writable.abort().catch(() => {});
+        throw error;
+      }
+
+      await clearLegacyChunks();
+      return handle.getFile();
     }
 
     async function readStoredChunk(index) {
-      const database = await openDatabase();
-      const transaction = database.transaction("chunks");
-      return requestResult(transaction.objectStore("chunks").get(index));
-    }
-
-    async function readStoredChunks() {
-      const database = await openDatabase();
-      const transaction = database.transaction("chunks");
-      return requestResult(transaction.objectStore("chunks").getAll());
+      const sampleCount = savedSession?.chunkSamples[index] || 0;
+      if (sampleCount === 0) return null;
+      const file = await readStoredAudioFile(savedSession);
+      if (!file) return null;
+      const startSample = savedSession.chunkSamples
+        .slice(0, index)
+        .reduce((total, value) => total + (value || 0), 0);
+      const data = await file
+        .slice(44 + startSample * 2, 44 + (startSample + sampleCount) * 2)
+        .arrayBuffer();
+      return {
+        index,
+        data,
+        sampleCount,
+        sampleRate: savedSession.sampleRate || 24000,
+      };
     }
 
     function countWords(value) {
@@ -752,13 +847,13 @@
     }
 
     async function showStoredAudio(record, position = 0, autoplay = false) {
-      const chunks = await readStoredChunks();
-      if (chunks.length === 0) {
+      const file = await readStoredAudioFile(record);
+      if (!file) {
         clearAudio();
         return;
       }
       await setAudioBlob(
-        createWavBlob(chunks),
+        file,
         position,
         autoplay,
         record.state === "complete" ? "complete" : "partial",
@@ -807,11 +902,11 @@
       savedSession.position = position;
       savedSession.updatedAt = Date.now();
       await writeSavedSession(savedSession);
-      const chunks = await readStoredChunks();
-      const blob = createWavBlob(chunks);
+      const file = await readStoredAudioFile(savedSession);
+      if (!file) throw new Error("The saved audio file is missing.");
       generation = null;
       resetControls();
-      await setAudioBlob(blob, position, autoplay, "complete");
+      await setAudioBlob(file, position, autoplay, "complete");
       status.textContent = autoplay && !audio.paused
         ? "[playing] narration generated and saved locally."
         : "[ready] narration generated and saved locally.";
@@ -871,7 +966,7 @@
           data: encoded.data,
           sampleCount: encoded.sampleCount,
           sampleRate: message.sampleRate,
-        });
+        }, savedSession.totalSamples);
         savedSession.sampleRate = message.sampleRate;
         savedSession.chunkSamples[index] = encoded.sampleCount;
         savedSession.generatedChunks = Math.max(savedSession.generatedChunks, message.current);
@@ -892,6 +987,17 @@
         }
         return;
       }
+      if (message.type === "batch-complete") {
+        worker?.terminate();
+        worker = null;
+        active.id = nextJobId;
+        active.startIndex = message.nextIndex;
+        nextJobId += 1;
+        status.textContent = "[loading] refreshing WebGPU for the remaining "
+          + (message.total - message.nextIndex) + " sections.";
+        startWorkerBatch(active);
+        return;
+      }
       if (message.type === "generation-complete") {
         await finalizeGeneration(active);
         return;
@@ -910,10 +1016,23 @@
           .catch((error) => stopGeneration(error.message || String(error), true));
       });
       instance.addEventListener("error", (event) => {
-        void stopGeneration(event.message || "The speech worker could not start.", true);
+        if (worker === instance) {
+          void stopGeneration(event.message || "The speech worker could not start.", true);
+        }
       });
       worker = instance;
       return worker;
+    }
+
+    function startWorkerBatch(active) {
+      ensureWorker().postMessage({
+        type: "generate",
+        id: active.id,
+        text: savedSession.text,
+        credits: INITIAL_CREDITS,
+        speed: active.speed,
+        startIndex: active.startIndex,
+      });
     }
 
     async function startNarration(value) {
@@ -935,8 +1054,8 @@
         );
 
         if (!resume) {
-          await clearSavedData();
           clearAudio();
+          await clearSavedData();
           savedSession = {
             key: SESSION_KEY,
             text: value,
@@ -973,14 +1092,7 @@
         starting = false;
         button.disabled = false;
         button.textContent = "Stop generation";
-        ensureWorker().postMessage({
-          type: "generate",
-          id: active.id,
-          text: value,
-          credits: INITIAL_CREDITS,
-          speed: active.speed,
-          startIndex: active.startIndex,
-        });
+        startWorkerBatch(active);
       } catch (error) {
         starting = false;
         generation = null;
