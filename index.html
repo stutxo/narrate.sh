@@ -43,12 +43,13 @@
       font-weight: 700;
     }
     textarea,
-    button,
-    select { width: 100%; }
-    audio { width: 100%; }
+    #speak { width: 100%; }
+    audio {
+      width: 100%;
+      min-width: 0;
+    }
     textarea,
-    button,
-    select {
+    #speak {
       border: 1px solid #000;
       border-radius: 0;
       font: inherit;
@@ -61,18 +62,16 @@
       background: #fff;
       resize: vertical;
     }
-    textarea:disabled,
-    select:disabled {
+    textarea:disabled {
       color: #444;
       background: #f5f5f5;
     }
     textarea:focus,
-    button:focus,
-    select:focus {
+    #speak:focus {
       outline: 2px solid #000;
       outline-offset: 2px;
     }
-    button {
+    #speak {
       min-height: 48px;
       margin-top: 14px;
       padding: 10px 16px;
@@ -80,12 +79,7 @@
       background: #000;
       cursor: pointer;
     }
-    button.secondary {
-      margin-top: 0;
-      color: #000;
-      background: #fff;
-    }
-    button:disabled {
+    #speak:disabled {
       color: #555;
       background: #eee;
       border-style: dotted;
@@ -99,21 +93,6 @@
       color: #444;
       font-size: 0.8rem;
     }
-    .speed-control {
-      display: grid;
-      grid-template-columns: auto minmax(100px, 160px);
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-top: 14px;
-    }
-    .speed-control label { margin: 0; }
-    .speed-control select {
-      min-height: 44px;
-      padding: 8px 10px;
-      color: #000;
-      background: #fff;
-    }
     .word-count[data-over-limit="true"] {
       color: #000;
       font-weight: 700;
@@ -123,18 +102,35 @@
       margin: 12px 0 0;
       overflow-wrap: anywhere;
     }
-    .output {
-      margin-top: 18px;
-      padding: 18px;
-      border: 1px solid #000;
-    }
-    .seek-actions {
+    .output { margin-top: 18px; }
+    .player-row {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-      margin-top: 12px;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      width: min(560px, 100%);
+      margin: 0 auto;
     }
-    .seek-actions button { margin-top: 0; }
+    .seek-button {
+      min-width: 42px;
+      min-height: 36px;
+      margin: 0;
+      padding: 6px 8px;
+      border: 1px solid #000;
+      border-radius: 0;
+      color: #000;
+      background: #fff;
+      font: inherit;
+      cursor: pointer;
+    }
+    .seek-button:hover {
+      color: #fff;
+      background: #000;
+    }
+    .seek-button:focus {
+      outline: 2px solid #000;
+      outline-offset: 2px;
+    }
     .note {
       margin: 16px 0 0;
       color: #444;
@@ -154,33 +150,26 @@
         <span id="word-count" class="word-count">0 / 10,000 words</span>
         <span id="duration-estimate">about 67 minutes max</span>
       </div>
-      <div class="speed-control">
-        <label for="speed">Reading speed</label>
-        <select id="speed" name="speed">
-          <option value="1" selected>1×</option>
-          <option value="1.5">1.5×</option>
-          <option value="2">2×</option>
-        </select>
-      </div>
       <button id="speak" type="submit" disabled>Read aloud</button>
       <p id="status" class="status" role="status" aria-live="polite">[idle] waiting for text.</p>
     </form>
 
     <div id="output" class="output" hidden>
-      <audio id="audio" controls preload="metadata"></audio>
-      <div class="seek-actions">
-        <button id="back-15" type="button" class="secondary">−15 seconds</button>
-        <button id="forward-15" type="button" class="secondary">+15 seconds</button>
+      <div class="player-row">
+        <button id="back-15" type="button" class="seek-button" aria-label="Back 15 seconds">−15</button>
+        <audio id="audio" controls preload="metadata"></audio>
+        <button id="forward-15" type="button" class="seek-button" aria-label="Forward 15 seconds">+15</button>
       </div>
     </div>
 
-    <p class="note">Up to 10,000 words. One narration is saved locally so it survives closing the page. WebGPU runs automatically when available, with threaded WASM as the fallback. The first run downloads about 330 MB for WebGPU or 100 MB for WASM; the text and audio are not sent anywhere.</p>
+    <p class="note">Up to 10,000 words. The voice model starts downloading when this page opens. One narration is saved locally so it survives closing the page. WebGPU runs automatically when available, with threaded WASM as the fallback; the text and audio are not sent anywhere.</p>
   </main>
 
   <script type="module">
     const MAX_WORDS = 10000;
     const INITIAL_CREDITS = 1;
     const CHUNK_GAP_SECONDS = 0.08;
+    const PRELOAD_JOB_ID = 0;
     const workerSource = `
       let KokoroTTS;
       let TextSplitterStream;
@@ -360,7 +349,6 @@
       async function generate(job) {
         const text = typeof job.text === "string" ? job.text.trim() : "";
         const words = countWords(text);
-        const speed = [1, 1.5, 2].includes(Number(job.speed)) ? Number(job.speed) : 1;
         const requestedStartIndex = Number.isInteger(job.startIndex) && job.startIndex >= 0
           ? job.startIndex
           : 0;
@@ -401,7 +389,6 @@
             jobId: job.id,
             total: textChunks.length,
             words,
-            speed,
             startIndex: requestedStartIndex,
           });
           const tts = await modelPromise;
@@ -424,7 +411,7 @@
             });
             const audio = await tts.generate(textChunks[index], {
               voice: "af_heart",
-              speed,
+              speed: 1,
             });
             if (!currentJob || currentJob.id !== job.id) return;
 
@@ -459,9 +446,30 @@
         }
       }
 
+      async function preload(job) {
+        try {
+          await loadModel(job.id);
+          self.postMessage({
+            type: "preload-complete",
+            jobId: job.id,
+            backend: backend.label,
+          });
+        } catch (error) {
+          self.postMessage({
+            type: "preload-error",
+            jobId: job.id,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
       self.addEventListener("message", (event) => {
         if (event.data.type === "credit") {
           grantCredit(event.data.jobId);
+          return;
+        }
+        if (event.data.type === "preload") {
+          void preload(event.data);
           return;
         }
         if (event.data.type === "generate") {
@@ -484,7 +492,6 @@
     const forwardButton = document.querySelector("#forward-15");
     const wordCount = document.querySelector("#word-count");
     const durationEstimate = document.querySelector("#duration-estimate");
-    const speedSelect = document.querySelector("#speed");
     const workerUrl = URL.createObjectURL(new Blob([workerSource], { type: "text/javascript" }));
 
     let databasePromise = null;
@@ -665,11 +672,19 @@
       return trimmed ? trimmed.split(/\s+/u).length : 0;
     }
 
+    function savedGenerationSpeed(record) {
+      return Number(record?.generationSpeed ?? record?.speed ?? 1);
+    }
+
     function matchesSavedInput() {
+      return Boolean(savedSession && savedSession.text === text.value.trim());
+    }
+
+    function canResumeSavedInput() {
       return Boolean(
-        savedSession
-        && savedSession.text === text.value.trim()
-        && savedSession.speed === Number(speedSelect.value)
+        matchesSavedInput()
+        && savedSession.state !== "complete"
+        && savedGenerationSpeed(savedSession) === 1
       );
     }
 
@@ -678,7 +693,7 @@
       button.disabled = words === 0 || overLimit;
       if (button.disabled) {
         button.textContent = "Read aloud";
-      } else if (matchesSavedInput() && savedSession.state !== "complete") {
+      } else if (canResumeSavedInput()) {
         button.textContent = "Resume generation";
       } else if (matchesSavedInput() && savedSession.state === "complete") {
         button.textContent = "Generate again";
@@ -693,10 +708,9 @@
       wordCount.textContent = words.toLocaleString("en-US") + " / "
         + MAX_WORDS.toLocaleString("en-US") + " words";
       wordCount.dataset.overLimit = String(overLimit);
-      const readingSpeed = Number(speedSelect.value);
       durationEstimate.textContent = words
-        ? "about " + Math.max(1, Math.round(words / (150 * readingSpeed))) + " min"
-        : "about " + Math.ceil(MAX_WORDS / (150 * readingSpeed)) + " min max";
+        ? "about " + Math.max(1, Math.round(words / 150)) + " min"
+        : "about " + Math.ceil(MAX_WORDS / 150) + " min max";
       updateIdleButton(words, overLimit);
 
       if (updateStatus) {
@@ -873,7 +887,6 @@
 
     function resetControls() {
       text.disabled = false;
-      speedSelect.disabled = false;
       updateWordCount();
     }
 
@@ -913,6 +926,29 @@
     }
 
     async function handleWorkerMessage(message) {
+      if (message.jobId === PRELOAD_JOB_ID) {
+        if (message.type === "loading") {
+          status.textContent = "[loading] choosing the fastest local speech engine.";
+        } else if (message.type === "backend-selected") {
+          status.textContent = "[loading] preparing the " + message.backend + " voice model.";
+        } else if (message.type === "backend-fallback") {
+          status.textContent = "[loading] WebGPU unavailable; preparing "
+            + message.backend + ".";
+        } else if (message.type === "model-progress") {
+          const isModel = message.file.endsWith(".onnx");
+          status.textContent = isModel
+            ? "[loading] " + message.backend + " model " + Math.round(message.progress) + "%"
+            : "[loading] preparing the " + message.backend + " voice model.";
+        } else if (message.type === "preload-complete" && !generation) {
+          status.textContent = savedSession
+            ? "[saved] narration restored; " + message.backend + " model ready."
+            : "[idle] " + message.backend + " model ready.";
+        } else if (message.type === "preload-error" && !generation) {
+          status.textContent = "[idle] model download will retry when narration starts.";
+        }
+        return;
+      }
+
       const active = generation;
       if (!active || message.jobId !== active.id) return;
 
@@ -1030,7 +1066,6 @@
         id: active.id,
         text: savedSession.text,
         credits: INITIAL_CREDITS,
-        speed: active.speed,
         startIndex: active.startIndex,
       });
     }
@@ -1038,19 +1073,17 @@
     async function startNarration(value) {
       starting = true;
       text.disabled = true;
-      speedSelect.disabled = true;
       button.disabled = true;
       button.textContent = "Starting...";
       status.textContent = "[starting] opening the local speech engine.";
 
       try {
         void navigator.storage?.persist?.();
-        const selectedSpeed = Number(speedSelect.value);
         const resume = Boolean(
           savedSession
           && savedSession.state !== "complete"
           && savedSession.text === value
-          && savedSession.speed === selectedSpeed
+          && savedGenerationSpeed(savedSession) === 1
         );
 
         if (!resume) {
@@ -1059,7 +1092,7 @@
           savedSession = {
             key: SESSION_KEY,
             text: value,
-            speed: selectedSpeed,
+            generationSpeed: 1,
             state: "generating",
             totalChunks: 0,
             generatedChunks: 0,
@@ -1079,7 +1112,6 @@
 
         const active = {
           id: nextJobId,
-          speed: selectedSpeed,
           startIndex: resume ? savedSession.generatedChunks : 0,
           totalChunks: savedSession.totalChunks,
           backend: savedSession.backend,
@@ -1109,7 +1141,6 @@
           return;
         }
         text.value = savedSession.text || "";
-        speedSelect.value = String(savedSession.speed || 1);
         updateWordCount();
         if (savedSession.generatedChunks > 0) {
           await showStoredAudio(savedSession, savedSession.position || 0, false);
@@ -1163,10 +1194,9 @@
       void startNarration(value);
     });
 
+    text.addEventListener("input", () => updateWordCount(true));
     backButton.addEventListener("click", () => void seekBy(-15));
     forwardButton.addEventListener("click", () => void seekBy(15));
-    text.addEventListener("input", () => updateWordCount(true));
-    speedSelect.addEventListener("change", () => updateWordCount(true));
 
     audio.addEventListener("play", () => {
       status.textContent = generation
@@ -1198,6 +1228,7 @@
     });
 
     void restoreSession();
+    ensureWorker().postMessage({ type: "preload", id: PRELOAD_JOB_ID });
 
     window.addEventListener("beforeunload", () => {
       if (savedSession) {
