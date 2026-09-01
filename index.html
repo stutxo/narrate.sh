@@ -67,7 +67,10 @@
       background: #f5f5f5;
     }
     textarea:focus,
-    #speak:focus {
+    #speak:focus,
+    .secondary-button:focus,
+    .clear-history-button:focus,
+    .history-entry:focus {
       outline: 2px solid #000;
       outline-offset: 2px;
     }
@@ -102,20 +105,17 @@
       margin: 12px 0 0;
       overflow-wrap: anywhere;
     }
-    .output { margin-top: 18px; }
-    .player-row {
-      display: grid;
-      grid-template-columns: auto minmax(0, 1fr) auto;
-      align-items: center;
-      gap: 8px;
+    .output {
       width: min(560px, 100%);
-      margin: 0 auto;
+      margin: 18px auto 0;
     }
-    .seek-button {
-      min-width: 42px;
-      min-height: 36px;
-      margin: 0;
-      padding: 6px 8px;
+    .output-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 8px;
+    }
+    .secondary-button,
+    .clear-history-button {
       border: 1px solid #000;
       border-radius: 0;
       color: #000;
@@ -123,14 +123,83 @@
       font: inherit;
       cursor: pointer;
     }
-    .seek-button:hover {
+    .secondary-button { padding: 8px 12px; }
+    .clear-history-button { padding: 6px 9px; }
+    .secondary-button:hover,
+    .clear-history-button:hover {
       color: #fff;
       background: #000;
     }
-    .seek-button:focus {
-      outline: 2px solid #000;
-      outline-offset: 2px;
+    .secondary-button:disabled,
+    .clear-history-button:disabled {
+      color: #777;
+      background: #eee;
+      border-style: dotted;
+      cursor: default;
     }
+    .history {
+      margin-top: 28px;
+      padding-top: 16px;
+      border-top: 1px solid #000;
+    }
+    .history-header {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .history h2 {
+      margin: 0;
+      font-size: 1rem;
+    }
+    .history-usage,
+    .history-empty {
+      margin: 4px 0 0;
+      color: #444;
+      font-size: 0.8rem;
+    }
+    .history-list {
+      margin: 12px 0 0;
+      padding: 0;
+      border-top: 1px solid #ccc;
+      list-style: none;
+    }
+    .history-list li { border-bottom: 1px solid #ccc; }
+    .history-entry {
+      display: block;
+      width: 100%;
+      padding: 10px 8px;
+      border: 0;
+      color: #000;
+      background: #fff;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .history-entry:hover,
+    .history-entry[aria-current="true"] {
+      background: #f3f3f3;
+    }
+    .history-title,
+    .history-meta { display: block; }
+    .history-title {
+      overflow: hidden;
+      font-weight: 700;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .history-meta {
+      margin-top: 3px;
+      color: #555;
+      font-size: 0.75rem;
+    }
+    .model-info {
+      margin: 0 0 16px;
+      color: #444;
+      font-size: 0.8rem;
+      overflow-wrap: anywhere;
+    }
+    .model-info a { color: inherit; }
     .note {
       margin: 16px 0 0;
       color: #444;
@@ -142,6 +211,7 @@
   <main>
     <h1>narrate.sh</h1>
     <p class="lede">Type Text, hear it read aloud.</p>
+    <p class="model-info">Model: <a href="https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX" target="_blank" rel="noopener"><code>onnx-community/Kokoro-82M-v1.0-ONNX</code></a> · voice <code>af_heart</code> · <span id="model-runtime">selecting runtime</span></p>
 
     <form id="speech-form">
       <label for="text">Text</label>
@@ -155,14 +225,25 @@
     </form>
 
     <div id="output" class="output" hidden>
-      <div class="player-row">
-        <button id="back-15" type="button" class="seek-button" aria-label="Back 15 seconds">−15</button>
-        <audio id="audio" controls preload="metadata"></audio>
-        <button id="forward-15" type="button" class="seek-button" aria-label="Forward 15 seconds">+15</button>
+      <audio id="audio" controls preload="metadata"></audio>
+      <div class="output-actions">
+        <button id="new-narration" type="button" class="secondary-button">Generate new</button>
       </div>
     </div>
 
-    <p class="note">Up to 10,000 words. The voice model starts downloading when this page opens. One narration is saved locally so it survives closing the page. WebGPU runs automatically when available, with threaded WASM as the fallback; the text and audio are not sent anywhere.</p>
+    <section class="history" aria-labelledby="history-heading">
+      <div class="history-header">
+        <div>
+          <h2 id="history-heading">History</h2>
+          <p id="history-usage" class="history-usage">0 narrations · 0 B stored locally</p>
+        </div>
+        <button id="clear-history" type="button" class="clear-history-button" aria-label="Clear narration history" title="Clear narration history" disabled>Clear</button>
+      </div>
+      <ol id="history-list" class="history-list" hidden></ol>
+      <p id="history-empty" class="history-empty">No saved narrations yet.</p>
+    </section>
+
+    <p class="note">Up to 10,000 words. The voice model starts downloading when this page opens. Finished narrations are saved in this browser until you clear them. WebGPU runs automatically on desktop when available, with WASM as the fallback; mobile devices use a lower-memory WASM path. The text and audio are not sent anywhere.</p>
   </main>
 
   <script type="module">
@@ -173,19 +254,27 @@
     const workerSource = `
       let KokoroTTS;
       let TextSplitterStream;
+      const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
+      const MOBILE_SAFE_MODE = /Android|iPhone|iPad|iPod|Mobile/i.test(self.navigator.userAgent)
+        || (self.navigator.platform === "MacIntel" && self.navigator.maxTouchPoints > 1);
+      if (MOBILE_SAFE_MODE) {
+        try {
+          Object.defineProperty(self.navigator, "hardwareConcurrency", { value: 1 });
+        } catch {}
+      }
       const kokoroModule = import("https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js").then((module) => {
         KokoroTTS = module.KokoroTTS;
         TextSplitterStream = module.TextSplitterStream;
       });
 
-      const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
-      const MAX_CHUNK_LENGTH = 420;
+      const MAX_CHUNK_LENGTH = MOBILE_SAFE_MODE ? 180 : 420;
       const MAX_WORDS = ${MAX_WORDS};
       const WEBGPU_BATCH_CHUNKS = 24;
       const WEBGPU_BACKEND = Object.freeze({
         device: "webgpu",
         dtype: "fp32",
         label: "WebGPU",
+        modelFile: "onnx/model.onnx",
       });
       let ttsPromise = null;
       let backend = null;
@@ -234,12 +323,28 @@
         return {
           device: "wasm",
           dtype: "q8",
-          label: self.crossOriginIsolated ? "threaded WASM" : "WASM",
+          label: MOBILE_SAFE_MODE
+            ? "mobile-safe WASM"
+            : (self.crossOriginIsolated ? "threaded WASM" : "WASM"),
+          modelFile: "onnx/model_quantized.onnx",
+        };
+      }
+
+      function backendDetails() {
+        return {
+          backend: backend.label,
+          device: backend.device,
+          dtype: backend.dtype,
+          modelFile: backend.modelFile,
+          threads: backend.device === "wasm"
+            ? Math.min(4, Math.ceil((self.navigator.hardwareConcurrency || 1) / 2))
+            : null,
+          mobileSafe: MOBILE_SAFE_MODE,
         };
       }
 
       async function detectBackend() {
-        if (!self.navigator.gpu) return wasmBackend();
+        if (MOBILE_SAFE_MODE || !self.navigator.gpu) return wasmBackend();
 
         try {
           const adapter = await self.navigator.gpu.requestAdapter({
@@ -285,7 +390,7 @@
             self.postMessage({
               type: "backend-selected",
               jobId,
-              backend: backend.label,
+              ...backendDetails(),
             });
             try {
               return await createModel(backend, jobId);
@@ -295,7 +400,7 @@
               self.postMessage({
                 type: "backend-fallback",
                 jobId,
-                backend: backend.label,
+                ...backendDetails(),
               });
               return createModel(backend, jobId);
             }
@@ -395,7 +500,7 @@
           self.postMessage({
             type: "backend-ready",
             jobId: job.id,
-            backend: backend.label,
+            ...backendDetails(),
           });
 
           const batchEndIndex = backend.device === "webgpu"
@@ -452,7 +557,7 @@
           self.postMessage({
             type: "preload-complete",
             jobId: job.id,
-            backend: backend.label,
+            ...backendDetails(),
           });
         } catch (error) {
           self.postMessage({
@@ -479,7 +584,7 @@
     `;
 
     const DB_NAME = "narrate.sh";
-    const DB_VERSION = 1;
+    const DB_VERSION = 2;
     const SESSION_KEY = "current";
     const AUDIO_FILE_NAME = "narration.wav";
     const form = document.querySelector("#speech-form");
@@ -488,8 +593,12 @@
     const status = document.querySelector("#status");
     const output = document.querySelector("#output");
     const audio = document.querySelector("#audio");
-    const backButton = document.querySelector("#back-15");
-    const forwardButton = document.querySelector("#forward-15");
+    const newNarrationButton = document.querySelector("#new-narration");
+    const historyUsage = document.querySelector("#history-usage");
+    const historyList = document.querySelector("#history-list");
+    const historyEmpty = document.querySelector("#history-empty");
+    const clearHistoryButton = document.querySelector("#clear-history");
+    const modelRuntime = document.querySelector("#model-runtime");
     const wordCount = document.querySelector("#word-count");
     const durationEstimate = document.querySelector("#duration-estimate");
     const workerUrl = URL.createObjectURL(new Blob([workerSource], { type: "text/javascript" }));
@@ -504,6 +613,7 @@
     let audioUrl = null;
     let audioMode = "none";
     let positionSaveTimer = null;
+    let historyRecords = [];
 
     function openDatabase() {
       databasePromise ??= new Promise((resolve, reject) => {
@@ -515,6 +625,9 @@
           }
           if (!database.objectStoreNames.contains("chunks")) {
             database.createObjectStore("chunks", { keyPath: "index" });
+          }
+          if (!database.objectStoreNames.contains("narrations")) {
+            database.createObjectStore("narrations", { keyPath: "id" });
           }
         });
         request.addEventListener("success", () => resolve(request.result), { once: true });
@@ -546,9 +659,21 @@
 
     async function writeSavedSession(record) {
       const database = await openDatabase();
-      const transaction = database.transaction("session", "readwrite");
+      const storeNames = record.state === "complete" && record.id
+        ? ["session", "narrations"]
+        : ["session"];
+      const transaction = database.transaction(storeNames, "readwrite");
       transaction.objectStore("session").put(record);
+      if (storeNames.length > 1) {
+        transaction.objectStore("narrations").put(record);
+      }
       await transactionDone(transaction);
+    }
+    async function readNarrationHistory() {
+      const database = await openDatabase();
+      const transaction = database.transaction("narrations");
+      const records = await requestResult(transaction.objectStore("narrations").getAll());
+      return records.sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0));
     }
 
     async function audioDirectory() {
@@ -571,25 +696,43 @@
       await transactionDone(transaction);
     }
 
-    async function clearSavedData() {
-      const database = await openDatabase();
-      const transaction = database.transaction(["session", "chunks"], "readwrite");
-      transaction.objectStore("session").clear();
-      transaction.objectStore("chunks").clear();
-      await transactionDone(transaction);
-
-      if (!navigator.storage?.getDirectory) return;
+    async function removeStoredAudio(fileName) {
+      if (!navigator.storage?.getDirectory || !fileName) return;
       const directory = await audioDirectory();
       try {
-        await directory.removeEntry(AUDIO_FILE_NAME);
+        await directory.removeEntry(fileName);
       } catch (error) {
         if (error.name !== "NotFoundError") throw error;
       }
     }
 
-    async function writeStoredChunk(chunk, startSample) {
+    async function detachCurrentSession() {
+      const current = savedSession;
+      clearTimeout(positionSaveTimer);
+      if (current?.state === "complete" && audio.src) {
+        current.position = currentGlobalPosition();
+        current.updatedAt = Date.now();
+        await writeSavedSession(current);
+      }
+
+      const database = await openDatabase();
+      const transaction = database.transaction(["session", "chunks"], "readwrite");
+      transaction.objectStore("session").delete(SESSION_KEY);
+      transaction.objectStore("chunks").clear();
+      await transactionDone(transaction);
+
+      if (current && current.state !== "complete") {
+        await removeStoredAudio(current.audioFileName || AUDIO_FILE_NAME);
+      }
+      savedSession = null;
+    }
+
+    async function writeStoredChunk(record, chunk, startSample) {
       const directory = await audioDirectory();
-      const handle = await directory.getFileHandle(AUDIO_FILE_NAME, { create: true });
+      const handle = await directory.getFileHandle(
+        record.audioFileName || AUDIO_FILE_NAME,
+        { create: true },
+      );
       const writable = await handle.createWritable({ keepExistingData: true });
       const totalSamples = startSample + chunk.sampleCount;
 
@@ -617,7 +760,7 @@
       let handle = null;
 
       try {
-        handle = await directory.getFileHandle(AUDIO_FILE_NAME);
+        handle = await directory.getFileHandle(record.audioFileName || AUDIO_FILE_NAME);
         const file = await handle.getFile();
         if (file.size > 44) return file;
       } catch (error) {
@@ -626,7 +769,10 @@
 
       const chunks = await readLegacyChunks();
       if (chunks.length === 0) return null;
-      handle ??= await directory.getFileHandle(AUDIO_FILE_NAME, { create: true });
+      handle ??= await directory.getFileHandle(
+        record.audioFileName || AUDIO_FILE_NAME,
+        { create: true },
+      );
       const sampleRate = chunks[0].sampleRate || record.sampleRate || 24000;
       const sampleCount = chunks.reduce((total, chunk) => total + chunk.sampleCount, 0);
       const writable = await handle.createWritable();
@@ -675,6 +821,93 @@
     function savedGenerationSpeed(record) {
       return Number(record?.generationSpeed ?? record?.speed ?? 1);
     }
+    function formatBytes(bytes) {
+      if (bytes < 1024) return bytes.toLocaleString("en-US") + " B";
+      const units = ["KB", "MB", "GB"];
+      let value = bytes;
+      let unitIndex = -1;
+      do {
+        value /= 1024;
+        unitIndex += 1;
+      } while (value >= 1024 && unitIndex < units.length - 1);
+      return value.toLocaleString("en-US", {
+        maximumFractionDigits: value >= 10 ? 1 : 2,
+      }) + " " + units[unitIndex];
+    }
+
+    function formatDuration(seconds) {
+      const rounded = Math.max(0, Math.round(seconds || 0));
+      const minutes = Math.floor(rounded / 60);
+      return minutes + ":" + String(rounded % 60).padStart(2, "0");
+    }
+
+    function historyTitle(value) {
+      const normalized = value.replace(/\s+/gu, " ").trim();
+      return normalized.length > 72 ? normalized.slice(0, 71) + "…" : normalized;
+    }
+
+    function updateActionButtons() {
+      const busy = Boolean(generation || starting);
+      newNarrationButton.disabled = busy;
+      clearHistoryButton.disabled = busy || historyRecords.length === 0;
+    }
+
+    function renderHistory() {
+      const totalBytes = historyRecords.reduce(
+        (total, record) => total + (record.byteSize || 0),
+        0,
+      );
+      const count = historyRecords.length;
+      historyUsage.textContent = count.toLocaleString("en-US") + " "
+        + (count === 1 ? "narration" : "narrations") + " · "
+        + formatBytes(totalBytes) + " stored locally";
+      historyList.replaceChildren();
+      historyList.hidden = count === 0;
+      historyEmpty.hidden = count !== 0;
+
+      const fragment = document.createDocumentFragment();
+      for (const record of historyRecords) {
+        const item = document.createElement("li");
+        const entry = document.createElement("button");
+        const title = document.createElement("span");
+        const metadata = document.createElement("span");
+        const duration = record.durationSeconds
+          ?? record.totalSamples / (record.sampleRate || 24000);
+        entry.type = "button";
+        entry.className = "history-entry";
+        entry.dataset.historyId = record.id;
+        entry.setAttribute(
+          "aria-current",
+          String(savedSession?.state === "complete" && savedSession.id === record.id),
+        );
+        title.className = "history-title";
+        title.textContent = historyTitle(record.text || "Untitled narration");
+        metadata.className = "history-meta";
+        metadata.textContent = new Date(record.createdAt).toLocaleString("en-US", {
+          dateStyle: "medium",
+          timeStyle: "short",
+        }) + " · " + formatDuration(duration) + " · " + formatBytes(record.byteSize || 0);
+        entry.append(title, metadata);
+        item.append(entry);
+        fragment.append(item);
+      }
+      historyList.append(fragment);
+      updateActionButtons();
+    }
+
+    async function refreshHistory() {
+      historyRecords = await readNarrationHistory();
+      renderHistory();
+    }
+
+    function updateModelRuntime(message) {
+      if (!message.backend || !message.dtype || !message.modelFile) return;
+      modelRuntime.textContent = message.backend + " · " + message.dtype
+        + " · " + message.modelFile
+        + (message.threads
+          ? " · " + message.threads + (message.threads === 1 ? " thread" : " threads")
+          : "");
+    }
 
     function matchesSavedInput() {
       return Boolean(savedSession && savedSession.text === text.value.trim());
@@ -690,16 +923,18 @@
 
     function updateIdleButton(words, overLimit) {
       if (generation || starting) return;
-      button.disabled = words === 0 || overLimit;
-      if (button.disabled) {
+      const narrationReady = Boolean(
+        matchesSavedInput() && savedSession.state === "complete",
+      );
+      button.hidden = narrationReady;
+      if (narrationReady) {
+        button.disabled = true;
         button.textContent = "Read aloud";
-      } else if (canResumeSavedInput()) {
-        button.textContent = "Resume generation";
-      } else if (matchesSavedInput() && savedSession.state === "complete") {
-        button.textContent = "Generate again";
-      } else {
-        button.textContent = "Read aloud";
+        return;
       }
+
+      button.disabled = words === 0 || overLimit;
+      button.textContent = canResumeSavedInput() ? "Resume generation" : "Read aloud";
     }
 
     function updateWordCount(updateStatus = false) {
@@ -886,8 +1121,9 @@
     }
 
     function resetControls() {
-      text.disabled = false;
+      text.disabled = savedSession?.state === "complete";
       updateWordCount();
+      updateActionButtons();
     }
 
     async function stopGeneration(message, isError = false) {
@@ -914,18 +1150,23 @@
       savedSession.state = "complete";
       savedSession.position = position;
       savedSession.updatedAt = Date.now();
-      await writeSavedSession(savedSession);
       const file = await readStoredAudioFile(savedSession);
       if (!file) throw new Error("The saved audio file is missing.");
+      savedSession.byteSize = file.size;
+      savedSession.durationSeconds = savedSession.totalSamples
+        / (savedSession.sampleRate || 24000);
+      await writeSavedSession(savedSession);
       generation = null;
       resetControls();
       await setAudioBlob(file, position, autoplay, "complete");
+      await refreshHistory();
       status.textContent = autoplay && !audio.paused
         ? "[playing] narration generated and saved locally."
         : "[ready] narration generated and saved locally.";
     }
 
     async function handleWorkerMessage(message) {
+      updateModelRuntime(message);
       if (message.jobId === PRELOAD_JOB_ID) {
         if (message.type === "loading") {
           status.textContent = "[loading] choosing the fastest local speech engine.";
@@ -959,12 +1200,20 @@
       if (message.type === "backend-selected") {
         active.backend = message.backend;
         savedSession.backend = message.backend;
+        savedSession.device = message.device;
+        savedSession.dtype = message.dtype;
+        savedSession.modelFile = message.modelFile;
+        savedSession.threads = message.threads;
         status.textContent = "[loading] preparing the " + message.backend + " voice model.";
         return;
       }
       if (message.type === "backend-fallback") {
         active.backend = message.backend;
         savedSession.backend = message.backend;
+        savedSession.device = message.device;
+        savedSession.dtype = message.dtype;
+        savedSession.modelFile = message.modelFile;
+        savedSession.threads = message.threads;
         status.textContent = "[loading] WebGPU unavailable; falling back to "
           + message.backend + ".";
         return;
@@ -979,6 +1228,10 @@
       if (message.type === "backend-ready") {
         active.backend = message.backend;
         savedSession.backend = message.backend;
+        savedSession.device = message.device;
+        savedSession.dtype = message.dtype;
+        savedSession.modelFile = message.modelFile;
+        savedSession.threads = message.threads;
         await writeSavedSession(savedSession);
         return;
       }
@@ -997,7 +1250,7 @@
       if (message.type === "audio-chunk") {
         const encoded = encodePcm16(message.samples, message.sampleRate);
         const index = message.current - 1;
-        await writeStoredChunk({
+        await writeStoredChunk(savedSession, {
           index,
           data: encoded.data,
           sampleCount: encoded.sampleCount,
@@ -1073,8 +1326,10 @@
     async function startNarration(value) {
       starting = true;
       text.disabled = true;
+      button.hidden = false;
       button.disabled = true;
       button.textContent = "Starting...";
+      updateActionButtons();
       status.textContent = "[starting] opening the local speech engine.";
 
       try {
@@ -1087,10 +1342,13 @@
         );
 
         if (!resume) {
+          await detachCurrentSession();
           clearAudio();
-          await clearSavedData();
+          const narrationId = crypto.randomUUID();
           savedSession = {
             key: SESSION_KEY,
+            id: narrationId,
+            audioFileName: "narration-" + narrationId + ".wav",
             text: value,
             generationSpeed: 1,
             state: "generating",
@@ -1124,6 +1382,7 @@
         starting = false;
         button.disabled = false;
         button.textContent = "Stop generation";
+        updateActionButtons();
         startWorkerBatch(active);
       } catch (error) {
         starting = false;
@@ -1137,38 +1396,156 @@
       try {
         savedSession = await readSavedSession() || null;
         if (!savedSession) {
+          await refreshHistory();
           updateWordCount();
           return;
         }
-        text.value = savedSession.text || "";
-        updateWordCount();
-        if (savedSession.generatedChunks > 0) {
-          await showStoredAudio(savedSession, savedSession.position || 0, false);
+
+        savedSession.id ||= crypto.randomUUID();
+        savedSession.audioFileName ||= AUDIO_FILE_NAME;
+        savedSession.createdAt ||= savedSession.updatedAt || Date.now();
+        const file = savedSession.generatedChunks > 0
+          ? await readStoredAudioFile(savedSession)
+          : null;
+        if (savedSession.state === "complete") {
+          if (!file) throw new Error("The saved audio file is missing.");
+          savedSession.byteSize = file.size;
+          savedSession.durationSeconds = savedSession.totalSamples
+            / (savedSession.sampleRate || 24000);
         }
+        await writeSavedSession(savedSession);
+
+        text.value = savedSession.text || "";
+        if (file) {
+          await setAudioBlob(
+            file,
+            savedSession.position || 0,
+            false,
+            savedSession.state === "complete" ? "complete" : "partial",
+          );
+        }
+        resetControls();
+        await refreshHistory();
         status.textContent = savedSession.state === "complete"
           ? "[saved] narration restored from this browser."
           : "[saved] " + savedSession.generatedChunks + " of "
             + savedSession.totalChunks + " sections restored; resume when ready.";
-        updateWordCount();
       } catch (error) {
         status.textContent = "[error] saved narration could not be restored: " + error.message;
-        updateWordCount();
+        await refreshHistory().catch(() => {});
+        resetControls();
       }
     }
 
-    async function seekBy(seconds) {
-      if (!audio.src) return;
-      if (generation && audioMode === "chunk" && savedSession) {
-        const wasPlaying = !audio.paused;
-        const maximum = savedSession.totalSamples / (savedSession.sampleRate || 24000);
-        const target = Math.max(0, Math.min(currentGlobalPosition() + seconds, maximum));
-        const chunk = chunkAtPosition(savedSession, target);
-        await loadStreamingChunk(generation, chunk.index, chunk.offset, wasPlaying);
-      } else {
-        const maximum = Number.isFinite(audio.duration) ? audio.duration : audio.currentTime;
-        audio.currentTime = Math.max(0, Math.min(audio.currentTime + seconds, maximum));
+    async function selectNarration(id) {
+      if (generation || starting) return;
+      const record = historyRecords.find((candidate) => candidate.id === id);
+      if (!record) return;
+      if (
+        savedSession
+        && savedSession.state !== "complete"
+        && savedSession.generatedChunks > 0
+        && !window.confirm("Discard the unfinished narration and open this saved one?")
+      ) {
+        return;
       }
-      schedulePositionSave();
+
+      starting = true;
+      updateActionButtons();
+      try {
+        await detachCurrentSession();
+        clearAudio();
+        savedSession = { ...record, key: SESSION_KEY };
+        await writeSavedSession(savedSession);
+        text.value = savedSession.text || "";
+        await showStoredAudio(savedSession, savedSession.position || 0, false);
+        status.textContent = "[saved] narration opened from history.";
+      } catch (error) {
+        status.textContent = "[error] saved narration could not be opened: " + error.message;
+      } finally {
+        starting = false;
+        resetControls();
+        renderHistory();
+      }
+    }
+
+    async function beginNewNarration() {
+      if (generation || starting) return;
+      if (
+        savedSession
+        && savedSession.state !== "complete"
+        && savedSession.generatedChunks > 0
+        && !window.confirm("Discard the unfinished narration and start a new one?")
+      ) {
+        return;
+      }
+
+      starting = true;
+      updateActionButtons();
+      try {
+        await detachCurrentSession();
+        clearAudio();
+        text.value = "";
+        text.disabled = false;
+        button.hidden = false;
+        status.textContent = "[idle] ready for new text.";
+      } catch (error) {
+        status.textContent = "[error] a new narration could not be started: " + error.message;
+      } finally {
+        starting = false;
+        resetControls();
+        renderHistory();
+        text.focus();
+      }
+    }
+
+    async function clearNarrationHistory() {
+      if (generation || starting || historyRecords.length === 0) return;
+      if (!window.confirm("Clear all finished narrations from this browser?")) return;
+
+      starting = true;
+      updateActionButtons();
+      const currentWasComplete = savedSession?.state === "complete";
+      const fileNames = new Set(
+        historyRecords.map((record) => record.audioFileName || AUDIO_FILE_NAME),
+      );
+      if (currentWasComplete) {
+        fileNames.add(savedSession.audioFileName || AUDIO_FILE_NAME);
+      }
+
+      try {
+        const database = await openDatabase();
+        const transaction = database.transaction(
+          ["session", "narrations", "chunks"],
+          "readwrite",
+        );
+        transaction.objectStore("narrations").clear();
+        if (currentWasComplete) {
+          transaction.objectStore("session").delete(SESSION_KEY);
+          transaction.objectStore("chunks").clear();
+        }
+        await transactionDone(transaction);
+        for (const fileName of fileNames) {
+          await removeStoredAudio(fileName);
+        }
+
+        historyRecords = [];
+        if (currentWasComplete) {
+          savedSession = null;
+          clearAudio();
+          text.value = "";
+          text.disabled = false;
+          button.hidden = false;
+        }
+        status.textContent = "[cleared] narration history removed from this browser.";
+      } catch (error) {
+        status.textContent = "[error] narration history could not be cleared: " + error.message;
+        await refreshHistory().catch(() => {});
+      } finally {
+        starting = false;
+        resetControls();
+        renderHistory();
+      }
     }
 
     form.addEventListener("submit", (event) => {
@@ -1195,8 +1572,12 @@
     });
 
     text.addEventListener("input", () => updateWordCount(true));
-    backButton.addEventListener("click", () => void seekBy(-15));
-    forwardButton.addEventListener("click", () => void seekBy(15));
+    newNarrationButton.addEventListener("click", () => void beginNewNarration());
+    clearHistoryButton.addEventListener("click", () => void clearNarrationHistory());
+    historyList.addEventListener("click", (event) => {
+      const entry = event.target.closest("[data-history-id]");
+      if (entry) void selectNarration(entry.dataset.historyId);
+    });
 
     audio.addEventListener("play", () => {
       status.textContent = generation
