@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; worker-src blob:; connect-src https://cdn.jsdelivr.net https://huggingface.co https://*.huggingface.co https://*.hf.co; media-src blob:; style-src 'unsafe-inline'; base-uri 'none'; object-src 'none'; form-action 'none'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' blob: 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; worker-src blob:; connect-src https://cdn.jsdelivr.net https://huggingface.co https://*.huggingface.co https://*.hf.co; media-src blob:; style-src 'unsafe-inline'; base-uri 'none'; object-src 'none'; form-action 'none'" />
   <meta name="referrer" content="no-referrer" />
-  <title>Narrate</title>
+  <title>narrate.sh</title>
   <style>
     * { box-sizing: border-box; }
     [hidden] { display: none !important; }
@@ -43,9 +43,12 @@
       font-weight: 700;
     }
     textarea,
-    button { width: 100%; }
+    button,
+    select { width: 100%; }
+    audio { width: 100%; }
     textarea,
-    button {
+    button,
+    select {
       border: 1px solid #000;
       border-radius: 0;
       font: inherit;
@@ -58,12 +61,14 @@
       background: #fff;
       resize: vertical;
     }
-    textarea:disabled {
+    textarea:disabled,
+    select:disabled {
       color: #444;
       background: #f5f5f5;
     }
     textarea:focus,
-    button:focus {
+    button:focus,
+    select:focus {
       outline: 2px solid #000;
       outline-offset: 2px;
     }
@@ -94,6 +99,21 @@
       color: #444;
       font-size: 0.8rem;
     }
+    .speed-control {
+      display: grid;
+      grid-template-columns: auto minmax(100px, 160px);
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .speed-control label { margin: 0; }
+    .speed-control select {
+      min-height: 44px;
+      padding: 8px 10px;
+      color: #000;
+      background: #fff;
+    }
     .word-count[data-over-limit="true"] {
       color: #000;
       font-weight: 700;
@@ -108,6 +128,13 @@
       padding: 18px;
       border: 1px solid #000;
     }
+    .seek-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .seek-actions button { margin-top: 0; }
     .note {
       margin: 16px 0 0;
       color: #444;
@@ -117,8 +144,8 @@
 </head>
 <body>
   <main>
-    <h1>narrate</h1>
-    <p class="lede">Type English text. Hear it read aloud.</p>
+    <h1>narrate.sh</h1>
+    <p class="lede">Type Text, hear it read aloud.</p>
 
     <form id="speech-form">
       <label for="text">Text</label>
@@ -127,21 +154,32 @@
         <span id="word-count" class="word-count">0 / 10,000 words</span>
         <span id="duration-estimate">about 67 minutes max</span>
       </div>
+      <div class="speed-control">
+        <label for="speed">Reading speed</label>
+        <select id="speed" name="speed">
+          <option value="1" selected>1×</option>
+          <option value="1.5">1.5×</option>
+          <option value="2">2×</option>
+        </select>
+      </div>
       <button id="speak" type="submit" disabled>Read aloud</button>
       <p id="status" class="status" role="status" aria-live="polite">[idle] waiting for text.</p>
     </form>
 
     <div id="output" class="output" hidden>
-      <button id="pause" type="button" class="secondary">Pause</button>
+      <audio id="audio" controls preload="metadata"></audio>
+      <div class="seek-actions">
+        <button id="back-15" type="button" class="secondary">−15 seconds</button>
+        <button id="forward-15" type="button" class="secondary">+15 seconds</button>
+      </div>
     </div>
 
-    <p class="note">Up to 10,000 words. Audio is generated and played in small local sections, so long narration does not build one giant file in memory. The first run downloads and caches about 100 MB; the text is not sent anywhere.</p>
+    <p class="note">Up to 10,000 words. One narration is saved locally so it survives closing the page. WebGPU runs automatically when available, with threaded WASM as the fallback. The first run downloads about 330 MB for WebGPU or 100 MB for WASM; the text and audio are not sent anywhere.</p>
   </main>
 
   <script type="module">
     const MAX_WORDS = 10000;
-    const INITIAL_CREDITS = 3;
-    const PREBUFFER_CHUNKS = 2;
+    const INITIAL_CREDITS = 1;
     const CHUNK_GAP_SECONDS = 0.08;
     const workerSource = `
       let KokoroTTS;
@@ -154,7 +192,13 @@
       const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
       const MAX_CHUNK_LENGTH = 420;
       const MAX_WORDS = ${MAX_WORDS};
+      const WEBGPU_BACKEND = Object.freeze({
+        device: "webgpu",
+        dtype: "fp32",
+        label: "WebGPU",
+      });
       let ttsPromise = null;
+      let backend = null;
       let currentJob = null;
       let credits = 0;
       const creditWaiters = [];
@@ -196,27 +240,79 @@
         resetCredits(0);
       }
 
+      function wasmBackend() {
+        return {
+          device: "wasm",
+          dtype: "q8",
+          label: self.crossOriginIsolated ? "threaded WASM" : "WASM",
+        };
+      }
+
+      async function detectBackend() {
+        if (!self.navigator.gpu) return wasmBackend();
+
+        try {
+          const adapter = await self.navigator.gpu.requestAdapter({
+            powerPreference: "high-performance",
+          });
+          const architecture = adapter && adapter.info
+            ? String(adapter.info.architecture || "").toLowerCase()
+            : "";
+          if (!adapter || adapter.isFallbackAdapter || architecture === "swiftshader") {
+            return wasmBackend();
+          }
+          return WEBGPU_BACKEND;
+        } catch {
+          return wasmBackend();
+        }
+      }
+
+      function createModel(selected, jobId) {
+        return KokoroTTS.from_pretrained(MODEL_ID, {
+          dtype: selected.dtype,
+          device: selected.device,
+          progress_callback: (event) => {
+            if (event.status === "progress" && Number.isFinite(event.progress)) {
+              self.postMessage({
+                type: "model-progress",
+                jobId,
+                backend: selected.label,
+                file: event.file || "",
+                progress: event.progress,
+              });
+            }
+          },
+        });
+      }
+
       function loadModel(jobId) {
         if (ttsPromise) return ttsPromise;
 
         self.postMessage({ type: "loading", jobId });
         ttsPromise = kokoroModule
-          .then(() => KokoroTTS.from_pretrained(MODEL_ID, {
-            dtype: "q8",
-            device: "wasm",
-            progress_callback: (event) => {
-              if (event.status === "progress" && Number.isFinite(event.progress)) {
-                self.postMessage({
-                  type: "model-progress",
-                  jobId,
-                  file: event.file || "",
-                  progress: event.progress,
-                });
-              }
-            },
-          }))
+          .then(async () => {
+            backend = await detectBackend();
+            self.postMessage({
+              type: "backend-selected",
+              jobId,
+              backend: backend.label,
+            });
+            try {
+              return await createModel(backend, jobId);
+            } catch (error) {
+              if (backend.device !== "webgpu") throw error;
+              backend = wasmBackend();
+              self.postMessage({
+                type: "backend-fallback",
+                jobId,
+                backend: backend.label,
+              });
+              return createModel(backend, jobId);
+            }
+          })
           .catch((error) => {
             ttsPromise = null;
+            backend = null;
             throw error;
           });
         return ttsPromise;
@@ -263,6 +359,10 @@
       async function generate(job) {
         const text = typeof job.text === "string" ? job.text.trim() : "";
         const words = countWords(text);
+        const speed = [1, 1.5, 2].includes(Number(job.speed)) ? Number(job.speed) : 1;
+        const requestedStartIndex = Number.isInteger(job.startIndex) && job.startIndex >= 0
+          ? job.startIndex
+          : 0;
 
         if (!text) {
           self.postMessage({ type: "error", jobId: job.id, message: "Enter some text first." });
@@ -292,15 +392,25 @@
           const modelPromise = loadModel(job.id);
           await kokoroModule;
           const textChunks = splitText(text);
+          if (requestedStartIndex > textChunks.length) {
+            throw new Error("Saved narration progress does not match this text.");
+          }
           self.postMessage({
             type: "prepared",
             jobId: job.id,
             total: textChunks.length,
             words,
+            speed,
+            startIndex: requestedStartIndex,
           });
           const tts = await modelPromise;
+          self.postMessage({
+            type: "backend-ready",
+            jobId: job.id,
+            backend: backend.label,
+          });
 
-          for (let index = 0; index < textChunks.length; index += 1) {
+          for (let index = requestedStartIndex; index < textChunks.length; index += 1) {
             if (!(await takeCredit(job.id))) return;
             self.postMessage({
               type: "generating",
@@ -310,6 +420,7 @@
             });
             const audio = await tts.generate(textChunks[index], {
               voice: "af_heart",
+              speed,
             });
             if (!currentJob || currentJob.id !== job.id) return;
 
@@ -323,6 +434,7 @@
               samples,
             }, [samples.buffer]);
           }
+          if (requestedStartIndex < textChunks.length && !(await takeCredit(job.id))) return;
 
           self.postMessage({
             type: "generation-complete",
@@ -353,24 +465,131 @@
       });
     `;
 
+    const DB_NAME = "narrate.sh";
+    const DB_VERSION = 1;
+    const SESSION_KEY = "current";
     const form = document.querySelector("#speech-form");
     const text = document.querySelector("#text");
     const button = document.querySelector("#speak");
-    const pauseButton = document.querySelector("#pause");
     const status = document.querySelector("#status");
     const output = document.querySelector("#output");
+    const audio = document.querySelector("#audio");
+    const backButton = document.querySelector("#back-15");
+    const forwardButton = document.querySelector("#forward-15");
     const wordCount = document.querySelector("#word-count");
     const durationEstimate = document.querySelector("#duration-estimate");
+    const speedSelect = document.querySelector("#speed");
     const workerUrl = URL.createObjectURL(new Blob([workerSource], { type: "text/javascript" }));
 
+    let databasePromise = null;
     let worker = null;
-    let session = null;
+    let workerMessages = Promise.resolve();
+    let generation = null;
+    let savedSession = null;
     let starting = false;
     let nextJobId = 1;
+    let audioUrl = null;
+    let audioMode = "none";
+    let positionSaveTimer = null;
+
+    function openDatabase() {
+      databasePromise ??= new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.addEventListener("upgradeneeded", () => {
+          const database = request.result;
+          if (!database.objectStoreNames.contains("session")) {
+            database.createObjectStore("session", { keyPath: "key" });
+          }
+          if (!database.objectStoreNames.contains("chunks")) {
+            database.createObjectStore("chunks", { keyPath: "index" });
+          }
+        });
+        request.addEventListener("success", () => resolve(request.result), { once: true });
+        request.addEventListener("error", () => reject(request.error), { once: true });
+      });
+      return databasePromise;
+    }
+
+    function requestResult(request) {
+      return new Promise((resolve, reject) => {
+        request.addEventListener("success", () => resolve(request.result), { once: true });
+        request.addEventListener("error", () => reject(request.error), { once: true });
+      });
+    }
+
+    function transactionDone(transaction) {
+      return new Promise((resolve, reject) => {
+        transaction.addEventListener("complete", resolve, { once: true });
+        transaction.addEventListener("abort", () => reject(transaction.error), { once: true });
+        transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+      });
+    }
+
+    async function readSavedSession() {
+      const database = await openDatabase();
+      const transaction = database.transaction("session");
+      return requestResult(transaction.objectStore("session").get(SESSION_KEY));
+    }
+
+    async function writeSavedSession(record) {
+      const database = await openDatabase();
+      const transaction = database.transaction("session", "readwrite");
+      transaction.objectStore("session").put(record);
+      await transactionDone(transaction);
+    }
+
+    async function clearSavedData() {
+      const database = await openDatabase();
+      const transaction = database.transaction(["session", "chunks"], "readwrite");
+      transaction.objectStore("session").clear();
+      transaction.objectStore("chunks").clear();
+      await transactionDone(transaction);
+    }
+
+    async function writeStoredChunk(chunk) {
+      const database = await openDatabase();
+      const transaction = database.transaction("chunks", "readwrite");
+      transaction.objectStore("chunks").put(chunk);
+      await transactionDone(transaction);
+    }
+
+    async function readStoredChunk(index) {
+      const database = await openDatabase();
+      const transaction = database.transaction("chunks");
+      return requestResult(transaction.objectStore("chunks").get(index));
+    }
+
+    async function readStoredChunks() {
+      const database = await openDatabase();
+      const transaction = database.transaction("chunks");
+      return requestResult(transaction.objectStore("chunks").getAll());
+    }
 
     function countWords(value) {
       const trimmed = value.trim();
       return trimmed ? trimmed.split(/\s+/u).length : 0;
+    }
+
+    function matchesSavedInput() {
+      return Boolean(
+        savedSession
+        && savedSession.text === text.value.trim()
+        && savedSession.speed === Number(speedSelect.value)
+      );
+    }
+
+    function updateIdleButton(words, overLimit) {
+      if (generation || starting) return;
+      button.disabled = words === 0 || overLimit;
+      if (button.disabled) {
+        button.textContent = "Read aloud";
+      } else if (matchesSavedInput() && savedSession.state !== "complete") {
+        button.textContent = "Resume generation";
+      } else if (matchesSavedInput() && savedSession.state === "complete") {
+        button.textContent = "Generate again";
+      } else {
+        button.textContent = "Read aloud";
+      }
     }
 
     function updateWordCount(updateStatus = false) {
@@ -379,11 +598,12 @@
       wordCount.textContent = words.toLocaleString("en-US") + " / "
         + MAX_WORDS.toLocaleString("en-US") + " words";
       wordCount.dataset.overLimit = String(overLimit);
+      const readingSpeed = Number(speedSelect.value);
       durationEstimate.textContent = words
-        ? "about " + Math.max(1, Math.round(words / 150)) + " min"
-        : "about " + Math.ceil(MAX_WORDS / 150) + " min max";
+        ? "about " + Math.max(1, Math.round(words / (150 * readingSpeed))) + " min"
+        : "about " + Math.ceil(MAX_WORDS / (150 * readingSpeed)) + " min max";
+      updateIdleButton(words, overLimit);
 
-      if (!session) button.disabled = words === 0 || overLimit;
       if (updateStatus) {
         if (overLimit) {
           const excess = words - MAX_WORDS;
@@ -398,177 +618,299 @@
       return words;
     }
 
-    function updatePlaybackStatus(active) {
-      if (session !== active || active.stopped) return;
-      if (active.paused) {
-        status.textContent = "[paused] section " + Math.min(active.playedChunks + 1, active.totalChunks)
-          + " of " + active.totalChunks + ".";
-      } else if (active.sources.size > 0) {
-        status.textContent = "[playing] section " + Math.min(active.playedChunks + 1, active.totalChunks)
-          + " of " + active.totalChunks + "; generated "
-          + active.generatedChunks + " of " + active.totalChunks + ".";
-      } else if (!active.generationComplete) {
-        status.textContent = "[buffering] generated " + active.generatedChunks
-          + " of " + active.totalChunks + " sections.";
+    function encodePcm16(samples, sampleRate) {
+      const gapSamples = Math.round(sampleRate * CHUNK_GAP_SECONDS);
+      const sampleCount = samples.length + gapSamples;
+      const data = new ArrayBuffer(sampleCount * 2);
+      const view = new DataView(data);
+      for (let index = 0; index < samples.length; index += 1) {
+        const sample = Math.max(-1, Math.min(1, samples[index]));
+        view.setInt16(
+          index * 2,
+          Math.round(sample < 0 ? sample * 0x8000 : sample * 0x7fff),
+          true,
+        );
       }
+      return { data, sampleCount };
+    }
+
+    function writeAscii(view, offset, value) {
+      for (let index = 0; index < value.length; index += 1) {
+        view.setUint8(offset + index, value.charCodeAt(index));
+      }
+    }
+
+    function createWavHeader(sampleCount, sampleRate) {
+      const header = new ArrayBuffer(44);
+      const view = new DataView(header);
+      writeAscii(view, 0, "RIFF");
+      view.setUint32(4, 36 + sampleCount * 2, true);
+      writeAscii(view, 8, "WAVE");
+      writeAscii(view, 12, "fmt ");
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeAscii(view, 36, "data");
+      view.setUint32(40, sampleCount * 2, true);
+      return header;
+    }
+
+    function createWavBlob(chunks) {
+      const sampleRate = chunks[0]?.sampleRate || 24000;
+      const sampleCount = chunks.reduce((total, chunk) => total + chunk.sampleCount, 0);
+      return new Blob(
+        [createWavHeader(sampleCount, sampleRate), ...chunks.map((chunk) => chunk.data)],
+        { type: "audio/wav" },
+      );
+    }
+
+    function waitForMetadata() {
+      if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        audio.addEventListener("loadedmetadata", resolve, { once: true });
+        audio.addEventListener("error", () => reject(audio.error), { once: true });
+      });
+    }
+
+    async function setAudioBlob(blob, position = 0, autoplay = false, mode = "complete") {
+      const previousUrl = audioUrl;
+      audio.pause();
+      audioUrl = URL.createObjectURL(blob);
+      audioMode = mode;
+      audio.src = audioUrl;
+      audio.load();
+      output.hidden = false;
+      await waitForMetadata();
+      audio.currentTime = Math.max(0, Math.min(position, Number.isFinite(audio.duration) ? audio.duration : position));
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
+      if (autoplay) {
+        try {
+          await audio.play();
+        } catch {
+          status.textContent = "[ready] audio generated. press play to hear it.";
+        }
+      }
+    }
+
+    function clearAudio() {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      output.hidden = true;
+      audioMode = "none";
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+      audioUrl = null;
+    }
+
+    function chunkStartSeconds(record, index) {
+      const sampleRate = record.sampleRate || 24000;
+      let samples = 0;
+      for (let position = 0; position < index; position += 1) {
+        samples += record.chunkSamples[position] || 0;
+      }
+      return samples / sampleRate;
+    }
+
+    function currentGlobalPosition() {
+      if (
+        generation
+        && audioMode === "chunk"
+        && Number.isInteger(generation.currentChunkIndex)
+      ) {
+        return chunkStartSeconds(savedSession, generation.currentChunkIndex) + audio.currentTime;
+      }
+      return audio.currentTime || 0;
+    }
+
+    function chunkAtPosition(record, seconds) {
+      const sampleRate = record.sampleRate || 24000;
+      const targetSample = Math.max(0, Math.floor(seconds * sampleRate));
+      let startSample = 0;
+      for (let index = 0; index < record.generatedChunks; index += 1) {
+        const endSample = startSample + (record.chunkSamples[index] || 0);
+        if (targetSample < endSample || index === record.generatedChunks - 1) {
+          return {
+            index,
+            offset: Math.max(0, (targetSample - startSample) / sampleRate),
+          };
+        }
+        startSample = endSample;
+      }
+      return { index: 0, offset: 0 };
+    }
+
+    async function loadStreamingChunk(active, index, offset = 0, autoplay = true) {
+      const chunk = await readStoredChunk(index);
+      if (!chunk || generation !== active) return;
+      active.currentChunkIndex = index;
+      active.waitingForChunk = null;
+      await setAudioBlob(createWavBlob([chunk]), offset, autoplay, "chunk");
+    }
+
+    async function showStoredAudio(record, position = 0, autoplay = false) {
+      const chunks = await readStoredChunks();
+      if (chunks.length === 0) {
+        clearAudio();
+        return;
+      }
+      await setAudioBlob(
+        createWavBlob(chunks),
+        position,
+        autoplay,
+        record.state === "complete" ? "complete" : "partial",
+      );
+    }
+
+    function schedulePositionSave() {
+      if (!savedSession) return;
+      clearTimeout(positionSaveTimer);
+      positionSaveTimer = setTimeout(() => {
+        if (!savedSession) return;
+        savedSession.position = currentGlobalPosition();
+        savedSession.updatedAt = Date.now();
+        void writeSavedSession(savedSession);
+      }, 750);
     }
 
     function resetControls() {
       text.disabled = false;
-      button.textContent = "Read aloud";
-      output.hidden = true;
-      pauseButton.textContent = "Pause";
-      pauseButton.disabled = false;
+      speedSelect.disabled = false;
       updateWordCount();
     }
 
-    function stopSources(active) {
-      active.stopped = true;
-      for (const source of active.sources) {
-        try {
-          source.stop();
-        } catch {
-          // The source already ended.
-        }
-      }
-      active.sources.clear();
-      active.pending.length = 0;
-      void active.context.close();
-    }
-
-    function finishNarration(active) {
-      if (session !== active || active.stopped) return;
-      stopSources(active);
-      session = null;
-      resetControls();
-      status.textContent = "[done] narration finished.";
-    }
-
-    function maybeFinish(active) {
-      if (
-        active.generationComplete
-        && active.playedChunks >= active.totalChunks
-        && active.sources.size === 0
-        && active.pending.length === 0
-      ) {
-        finishNarration(active);
-      }
-    }
-
-    function onSourceEnded(active, source) {
-      if (session !== active || active.stopped) return;
-      active.sources.delete(source);
-      active.playedChunks += 1;
-      worker?.postMessage({ type: "credit", jobId: active.id });
-      updatePlaybackStatus(active);
-      maybeFinish(active);
-    }
-
-    function schedulePending(active) {
-      if (session !== active || active.stopped || !active.playbackStarted) return;
-
-      while (active.pending.length > 0) {
-        const audioBuffer = active.pending.shift();
-        const source = active.context.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(active.context.destination);
-        const startAt = Math.max(active.scheduledUntil, active.context.currentTime + 0.05);
-        source.start(startAt);
-        active.scheduledUntil = startAt + audioBuffer.duration + CHUNK_GAP_SECONDS;
-        active.sources.add(source);
-        source.addEventListener("ended", () => onSourceEnded(active, source), { once: true });
-      }
-      updatePlaybackStatus(active);
-    }
-
-    function maybeStartPlayback(active) {
-      if (session !== active || active.stopped) return;
-      if (!active.playbackStarted) {
-        if (active.pending.length < PREBUFFER_CHUNKS && !active.generationComplete) return;
-        active.playbackStarted = true;
-        active.scheduledUntil = active.context.currentTime + 0.08;
-        output.hidden = false;
-        void active.context.resume();
-      }
-      schedulePending(active);
-    }
-
-    function abortNarration(message, isError = false) {
-      const active = session;
-      if (active) {
-        stopSources(active);
-        session = null;
-      }
+    async function stopGeneration(message, isError = false) {
+      const active = generation;
+      generation = null;
       worker?.terminate();
       worker = null;
+      workerMessages = Promise.resolve();
+      if (active && savedSession) {
+        savedSession.state = "incomplete";
+        savedSession.position = currentGlobalPosition();
+        savedSession.updatedAt = Date.now();
+        await writeSavedSession(savedSession);
+        await showStoredAudio(savedSession, savedSession.position, false);
+      }
       resetControls();
       status.textContent = (isError ? "[error] " : "[stopped] ") + message;
     }
 
-    function handleWorkerMessage(message) {
-      const active = session;
+    async function finalizeGeneration(active) {
+      if (generation !== active || !savedSession) return;
+      const position = currentGlobalPosition();
+      const autoplay = audioMode === "chunk" ? !audio.paused : active.startIndex === 0;
+      savedSession.state = "complete";
+      savedSession.position = position;
+      savedSession.updatedAt = Date.now();
+      await writeSavedSession(savedSession);
+      const chunks = await readStoredChunks();
+      const blob = createWavBlob(chunks);
+      generation = null;
+      resetControls();
+      await setAudioBlob(blob, position, autoplay, "complete");
+      status.textContent = autoplay && !audio.paused
+        ? "[playing] narration generated and saved locally."
+        : "[ready] narration generated and saved locally.";
+    }
+
+    async function handleWorkerMessage(message) {
+      const active = generation;
       if (!active || message.jobId !== active.id) return;
 
       if (message.type === "loading") {
-        status.textContent = "[loading] downloading the local voice model.";
+        status.textContent = "[loading] choosing the fastest local speech engine.";
         return;
       }
-
+      if (message.type === "backend-selected") {
+        active.backend = message.backend;
+        savedSession.backend = message.backend;
+        status.textContent = "[loading] preparing the " + message.backend + " voice model.";
+        return;
+      }
+      if (message.type === "backend-fallback") {
+        active.backend = message.backend;
+        savedSession.backend = message.backend;
+        status.textContent = "[loading] WebGPU unavailable; falling back to "
+          + message.backend + ".";
+        return;
+      }
       if (message.type === "model-progress") {
-        const isModel = message.file.includes("model_quantized.onnx");
+        const isModel = message.file.endsWith(".onnx");
         status.textContent = isModel
-          ? "[loading] model " + Math.round(message.progress) + "%"
-          : "[loading] preparing the voice model.";
+          ? "[loading] " + message.backend + " model " + Math.round(message.progress) + "%"
+          : "[loading] preparing the " + message.backend + " voice model.";
         return;
       }
-
+      if (message.type === "backend-ready") {
+        active.backend = message.backend;
+        savedSession.backend = message.backend;
+        await writeSavedSession(savedSession);
+        return;
+      }
       if (message.type === "prepared") {
         active.totalChunks = message.total;
+        savedSession.totalChunks = message.total;
+        await writeSavedSession(savedSession);
         status.textContent = "[working] prepared " + message.total + " narration sections.";
         return;
       }
-
       if (message.type === "generating") {
-        active.generatingChunk = message.current;
-        if (!active.playbackStarted) {
-          status.textContent = "[working] generating section " + message.current
-            + " of " + message.total + ".";
+        status.textContent = "[working] generating section " + message.current
+          + " of " + message.total + ".";
+        return;
+      }
+      if (message.type === "audio-chunk") {
+        const encoded = encodePcm16(message.samples, message.sampleRate);
+        const index = message.current - 1;
+        await writeStoredChunk({
+          index,
+          data: encoded.data,
+          sampleCount: encoded.sampleCount,
+          sampleRate: message.sampleRate,
+        });
+        savedSession.sampleRate = message.sampleRate;
+        savedSession.chunkSamples[index] = encoded.sampleCount;
+        savedSession.generatedChunks = Math.max(savedSession.generatedChunks, message.current);
+        savedSession.totalSamples = savedSession.chunkSamples.reduce(
+          (total, value) => total + (value || 0),
+          0,
+        );
+        savedSession.updatedAt = Date.now();
+        await writeSavedSession(savedSession);
+        worker?.postMessage({ type: "credit", jobId: active.id });
+        status.textContent = "[working] generated " + message.current
+          + " of " + message.total + " sections.";
+
+        if (active.streamNew && active.currentChunkIndex === null && index === 0) {
+          await loadStreamingChunk(active, 0);
+        } else if (active.streamNew && active.waitingForChunk === index) {
+          await loadStreamingChunk(active, index);
         }
         return;
       }
-
-      if (message.type === "audio-chunk") {
-        const audioBuffer = active.context.createBuffer(
-          1,
-          message.samples.length,
-          message.sampleRate,
-        );
-        audioBuffer.copyToChannel(message.samples, 0);
-        active.pending.push(audioBuffer);
-        active.generatedChunks = message.current;
-        maybeStartPlayback(active);
-        return;
-      }
-
       if (message.type === "generation-complete") {
-        active.generationComplete = true;
-        maybeStartPlayback(active);
-        maybeFinish(active);
+        await finalizeGeneration(active);
         return;
       }
-
       if (message.type === "error") {
-        abortNarration(message.message, true);
+        await stopGeneration(message.message, true);
       }
     }
 
     function ensureWorker() {
       if (worker) return worker;
-
       const instance = new Worker(workerUrl, { type: "module" });
-      instance.addEventListener("message", (event) => handleWorkerMessage(event.data));
+      instance.addEventListener("message", (event) => {
+        workerMessages = workerMessages
+          .then(() => handleWorkerMessage(event.data))
+          .catch((error) => stopGeneration(error.message || String(error), true));
+      });
       instance.addEventListener("error", (event) => {
-        abortNarration(event.message || "The speech worker could not start.", true);
+        void stopGeneration(event.message || "The speech worker could not start.", true);
       });
       worker = instance;
       return worker;
@@ -577,63 +919,119 @@
     async function startNarration(value) {
       starting = true;
       text.disabled = true;
+      speedSelect.disabled = true;
       button.disabled = true;
       button.textContent = "Starting...";
       status.textContent = "[starting] opening the local speech engine.";
 
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      if (!AudioContextClass) {
-        starting = false;
-        resetControls();
-        status.textContent = "[error] this browser does not support Web Audio.";
-        return;
-      }
-
-      const context = new AudioContextClass();
       try {
-        await context.resume();
-      } catch {
-        await context.close();
-        starting = false;
-        resetControls();
-        status.textContent = "[error] audio playback could not start.";
-        return;
-      }
+        void navigator.storage?.persist?.();
+        const selectedSpeed = Number(speedSelect.value);
+        const resume = Boolean(
+          savedSession
+          && savedSession.state !== "complete"
+          && savedSession.text === value
+          && savedSession.speed === selectedSpeed
+        );
 
-      const active = {
-        id: nextJobId,
-        context,
-        pending: [],
-        sources: new Set(),
-        scheduledUntil: 0,
-        totalChunks: 0,
-        generatedChunks: 0,
-        generatingChunk: 0,
-        playedChunks: 0,
-        generationComplete: false,
-        playbackStarted: false,
-        paused: false,
-        stopped: false,
-      };
-      nextJobId += 1;
-      starting = false;
-      session = active;
-      button.disabled = false;
-      button.textContent = "Stop narration";
-      output.hidden = true;
-      status.textContent = "[starting] opening the local speech engine.";
-      ensureWorker().postMessage({
-        type: "generate",
-        id: active.id,
-        text: value,
-        credits: INITIAL_CREDITS,
-      });
+        if (!resume) {
+          await clearSavedData();
+          clearAudio();
+          savedSession = {
+            key: SESSION_KEY,
+            text: value,
+            speed: selectedSpeed,
+            state: "generating",
+            totalChunks: 0,
+            generatedChunks: 0,
+            chunkSamples: [],
+            totalSamples: 0,
+            sampleRate: 24000,
+            position: 0,
+            backend: null,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          };
+        } else {
+          savedSession.state = "generating";
+          savedSession.updatedAt = Date.now();
+        }
+        await writeSavedSession(savedSession);
+
+        const active = {
+          id: nextJobId,
+          speed: selectedSpeed,
+          startIndex: resume ? savedSession.generatedChunks : 0,
+          totalChunks: savedSession.totalChunks,
+          backend: savedSession.backend,
+          streamNew: !resume,
+          currentChunkIndex: null,
+          waitingForChunk: null,
+        };
+        nextJobId += 1;
+        generation = active;
+        starting = false;
+        button.disabled = false;
+        button.textContent = "Stop generation";
+        ensureWorker().postMessage({
+          type: "generate",
+          id: active.id,
+          text: value,
+          credits: INITIAL_CREDITS,
+          speed: active.speed,
+          startIndex: active.startIndex,
+        });
+      } catch (error) {
+        starting = false;
+        generation = null;
+        resetControls();
+        status.textContent = "[error] local session storage failed: " + error.message;
+      }
+    }
+
+    async function restoreSession() {
+      try {
+        savedSession = await readSavedSession() || null;
+        if (!savedSession) {
+          updateWordCount();
+          return;
+        }
+        text.value = savedSession.text || "";
+        speedSelect.value = String(savedSession.speed || 1);
+        updateWordCount();
+        if (savedSession.generatedChunks > 0) {
+          await showStoredAudio(savedSession, savedSession.position || 0, false);
+        }
+        status.textContent = savedSession.state === "complete"
+          ? "[saved] narration restored from this browser."
+          : "[saved] " + savedSession.generatedChunks + " of "
+            + savedSession.totalChunks + " sections restored; resume when ready.";
+        updateWordCount();
+      } catch (error) {
+        status.textContent = "[error] saved narration could not be restored: " + error.message;
+        updateWordCount();
+      }
+    }
+
+    async function seekBy(seconds) {
+      if (!audio.src) return;
+      if (generation && audioMode === "chunk" && savedSession) {
+        const wasPlaying = !audio.paused;
+        const maximum = savedSession.totalSamples / (savedSession.sampleRate || 24000);
+        const target = Math.max(0, Math.min(currentGlobalPosition() + seconds, maximum));
+        const chunk = chunkAtPosition(savedSession, target);
+        await loadStreamingChunk(generation, chunk.index, chunk.offset, wasPlaying);
+      } else {
+        const maximum = Number.isFinite(audio.duration) ? audio.duration : audio.currentTime;
+        audio.currentTime = Math.max(0, Math.min(audio.currentTime + seconds, maximum));
+      }
+      schedulePositionSave();
     }
 
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      if (session) {
-        abortNarration("narration stopped.");
+      if (generation) {
+        void stopGeneration("generation stopped.");
         return;
       }
       if (starting) return;
@@ -653,28 +1051,50 @@
       void startNarration(value);
     });
 
-    pauseButton.addEventListener("click", async () => {
-      const active = session;
-      if (!active || !active.playbackStarted || active.stopped) return;
+    backButton.addEventListener("click", () => void seekBy(-15));
+    forwardButton.addEventListener("click", () => void seekBy(15));
+    text.addEventListener("input", () => updateWordCount(true));
+    speedSelect.addEventListener("change", () => updateWordCount(true));
 
-      if (active.paused) {
-        await active.context.resume();
-        active.paused = false;
-        pauseButton.textContent = "Pause";
-      } else {
-        await active.context.suspend();
-        active.paused = true;
-        pauseButton.textContent = "Resume";
+    audio.addEventListener("play", () => {
+      status.textContent = generation
+        ? "[playing] generated narration while remaining sections finish."
+        : "[playing] saved narration.";
+    });
+    audio.addEventListener("pause", () => {
+      if (!audio.ended && audio.currentTime > 0) {
+        status.textContent = "[paused] narration paused.";
       }
-      updatePlaybackStatus(active);
+      schedulePositionSave();
+    });
+    audio.addEventListener("timeupdate", schedulePositionSave);
+    audio.addEventListener("seeked", schedulePositionSave);
+    audio.addEventListener("ended", () => {
+      const active = generation;
+      if (active && audioMode === "chunk" && Number.isInteger(active.currentChunkIndex)) {
+        const nextIndex = active.currentChunkIndex + 1;
+        if (nextIndex < savedSession.generatedChunks) {
+          void loadStreamingChunk(active, nextIndex);
+        } else {
+          active.waitingForChunk = nextIndex;
+          status.textContent = "[buffering] waiting for the next generated section.";
+        }
+      } else {
+        status.textContent = "[done] playback finished.";
+        schedulePositionSave();
+      }
     });
 
-    text.addEventListener("input", () => updateWordCount(true));
-    updateWordCount();
+    void restoreSession();
 
     window.addEventListener("beforeunload", () => {
-      if (session) stopSources(session);
+      if (savedSession) {
+        savedSession.position = currentGlobalPosition();
+        savedSession.updatedAt = Date.now();
+        void writeSavedSession(savedSession);
+      }
       worker?.terminate();
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
       URL.revokeObjectURL(workerUrl);
     });
   </script>
