@@ -43,8 +43,7 @@
       font-weight: 700;
     }
     textarea,
-    button,
-    audio { width: 100%; }
+    button { width: 100%; }
     textarea,
     button {
       border: 1px solid #000;
@@ -59,9 +58,12 @@
       background: #fff;
       resize: vertical;
     }
+    textarea:disabled {
+      color: #444;
+      background: #f5f5f5;
+    }
     textarea:focus,
-    button:focus,
-    audio:focus {
+    button:focus {
       outline: 2px solid #000;
       outline-offset: 2px;
     }
@@ -73,11 +75,28 @@
       background: #000;
       cursor: pointer;
     }
+    button.secondary {
+      margin-top: 0;
+      color: #000;
+      background: #fff;
+    }
     button:disabled {
       color: #555;
       background: #eee;
       border-style: dotted;
       cursor: default;
+    }
+    .meta-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 8px;
+      color: #444;
+      font-size: 0.8rem;
+    }
+    .word-count[data-over-limit="true"] {
+      color: #000;
+      font-weight: 700;
     }
     .status {
       min-height: 1.5em;
@@ -104,18 +123,26 @@
     <form id="speech-form">
       <label for="text">Text</label>
       <textarea id="text" name="text" required autofocus placeholder="Type something to read aloud."></textarea>
-      <button id="speak" type="submit">Read aloud</button>
+      <div class="meta-row">
+        <span id="word-count" class="word-count">0 / 9,000 words</span>
+        <span id="duration-estimate">roughly one hour max</span>
+      </div>
+      <button id="speak" type="submit" disabled>Read aloud</button>
       <p id="status" class="status" role="status" aria-live="polite">[idle] waiting for text.</p>
     </form>
 
     <div id="output" class="output" hidden>
-      <audio id="audio" controls></audio>
+      <button id="pause" type="button" class="secondary">Pause</button>
     </div>
 
-    <p class="note">The first run downloads and caches about 100 MB. Speech is generated in this browser with Kokoro and WASM; the text is not sent anywhere.</p>
+    <p class="note">Up to 9,000 words. Audio is generated and played in small local sections, so long narration does not build one giant file in memory. The first run downloads and caches about 100 MB; the text is not sent anywhere.</p>
   </main>
 
   <script type="module">
+    const MAX_WORDS = 9000;
+    const INITIAL_CREDITS = 3;
+    const PREBUFFER_CHUNKS = 2;
+    const CHUNK_GAP_SECONDS = 0.08;
     const workerSource = `
       let KokoroTTS;
       let TextSplitterStream;
@@ -125,14 +152,54 @@
       });
 
       const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
-      const SAMPLE_RATE = 24000;
       const MAX_CHUNK_LENGTH = 420;
+      const MAX_WORDS = ${MAX_WORDS};
       let ttsPromise = null;
+      let currentJob = null;
+      let credits = 0;
+      const creditWaiters = [];
 
-      function loadModel() {
+      function countWords(value) {
+        const trimmed = value.trim();
+        return trimmed ? trimmed.split(/\\s+/u).length : 0;
+      }
+
+      function resetCredits(value) {
+        credits = Math.max(0, value);
+        while (creditWaiters.length > 0) {
+          creditWaiters.shift()(false);
+        }
+      }
+
+      function grantCredit(jobId) {
+        if (!currentJob || currentJob.id !== jobId) return;
+        const waiter = creditWaiters.shift();
+        if (waiter) {
+          waiter(true);
+        } else {
+          credits += 1;
+        }
+      }
+
+      function takeCredit(jobId) {
+        if (!currentJob || currentJob.id !== jobId) return Promise.resolve(false);
+        if (credits > 0) {
+          credits -= 1;
+          return Promise.resolve(true);
+        }
+        return new Promise((resolve) => creditWaiters.push(resolve));
+      }
+
+      function finishJob(jobId) {
+        if (!currentJob || currentJob.id !== jobId) return;
+        currentJob = null;
+        resetCredits(0);
+      }
+
+      function loadModel(jobId) {
         if (ttsPromise) return ttsPromise;
 
-        self.postMessage({ type: "loading" });
+        self.postMessage({ type: "loading", jobId });
         ttsPromise = kokoroModule
           .then(() => KokoroTTS.from_pretrained(MODEL_ID, {
             dtype: "q8",
@@ -141,6 +208,7 @@
               if (event.status === "progress" && Number.isFinite(event.progress)) {
                 self.postMessage({
                   type: "model-progress",
+                  jobId,
                   file: event.file || "",
                   progress: event.progress,
                 });
@@ -160,12 +228,7 @@
 
         while (remaining.length > MAX_CHUNK_LENGTH) {
           let splitAt = remaining.lastIndexOf(" ", MAX_CHUNK_LENGTH);
-          if (splitAt < MAX_CHUNK_LENGTH / 2) {
-            const nextSpace = remaining.indexOf(" ", MAX_CHUNK_LENGTH);
-            splitAt = nextSpace > -1 && nextSpace <= MAX_CHUNK_LENGTH + 80
-              ? nextSpace
-              : MAX_CHUNK_LENGTH;
-          }
+          if (splitAt < 1) splitAt = MAX_CHUNK_LENGTH;
 
           const chunk = remaining.slice(0, splitAt).trim();
           if (chunk) chunks.push(chunk);
@@ -179,80 +242,113 @@
       function splitText(text) {
         const splitter = new TextSplitterStream();
         splitter.push(text);
-        const sentences = Array.from(splitter);
-        return sentences.flatMap(splitLongSentence);
-      }
+        const parts = Array.from(splitter).flatMap(splitLongSentence);
+        const chunks = [];
+        let current = "";
 
-      function writeAscii(view, offset, value) {
-        for (let index = 0; index < value.length; index += 1) {
-          view.setUint8(offset + index, value.charCodeAt(index));
-        }
-      }
-
-      function encodeWav(chunks) {
-        const pauseLength = Math.round(SAMPLE_RATE * 0.12);
-        const sampleCount = chunks.reduce((total, chunk) => total + chunk.length, 0)
-          + pauseLength * Math.max(0, chunks.length - 1);
-        const buffer = new ArrayBuffer(44 + sampleCount * 2);
-        const view = new DataView(buffer);
-
-        writeAscii(view, 0, "RIFF");
-        view.setUint32(4, 36 + sampleCount * 2, true);
-        writeAscii(view, 8, "WAVE");
-        writeAscii(view, 12, "fmt ");
-        view.setUint32(16, 16, true);
-        view.setUint16(20, 1, true);
-        view.setUint16(22, 1, true);
-        view.setUint32(24, SAMPLE_RATE, true);
-        view.setUint32(28, SAMPLE_RATE * 2, true);
-        view.setUint16(32, 2, true);
-        view.setUint16(34, 16, true);
-        writeAscii(view, 36, "data");
-        view.setUint32(40, sampleCount * 2, true);
-
-        let offset = 44;
-        for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
-          for (const value of chunks[chunkIndex]) {
-            const sample = Math.max(-1, Math.min(1, value));
-            view.setInt16(offset, Math.round(sample < 0 ? sample * 0x8000 : sample * 0x7fff), true);
-            offset += 2;
+        for (const part of parts) {
+          if (!part) continue;
+          if (current && current.length + part.length + 1 > MAX_CHUNK_LENGTH) {
+            chunks.push(current);
+            current = part;
+          } else {
+            current = current ? current + " " + part : part;
           }
-          if (chunkIndex < chunks.length - 1) offset += pauseLength * 2;
         }
 
-        return new Blob([buffer], { type: "audio/wav" });
+        if (current) chunks.push(current);
+        return chunks;
       }
 
-      self.addEventListener("message", async (event) => {
-        const text = typeof event.data.text === "string" ? event.data.text.trim() : "";
+      async function generate(job) {
+        const text = typeof job.text === "string" ? job.text.trim() : "";
+        const words = countWords(text);
+
         if (!text) {
-          self.postMessage({ type: "error", message: "Enter some text first." });
+          self.postMessage({ type: "error", jobId: job.id, message: "Enter some text first." });
+          return;
+        }
+        if (words > MAX_WORDS) {
+          self.postMessage({
+            type: "error",
+            jobId: job.id,
+            message: "Text exceeds the 9,000 word limit.",
+          });
+          return;
+        }
+        if (currentJob) {
+          self.postMessage({
+            type: "error",
+            jobId: job.id,
+            message: "Another narration is already running.",
+          });
           return;
         }
 
+        currentJob = { id: job.id };
+        resetCredits(job.credits);
+
         try {
-          const tts = await loadModel();
+          const modelPromise = loadModel(job.id);
+          await kokoroModule;
           const textChunks = splitText(text);
-          const audioChunks = [];
+          self.postMessage({
+            type: "prepared",
+            jobId: job.id,
+            total: textChunks.length,
+            words,
+          });
+          const tts = await modelPromise;
 
           for (let index = 0; index < textChunks.length; index += 1) {
+            if (!(await takeCredit(job.id))) return;
             self.postMessage({
               type: "generating",
+              jobId: job.id,
               current: index + 1,
               total: textChunks.length,
             });
             const audio = await tts.generate(textChunks[index], {
               voice: "af_heart",
             });
-            audioChunks.push(audio.audio);
+            if (!currentJob || currentJob.id !== job.id) return;
+
+            const samples = audio.audio;
+            self.postMessage({
+              type: "audio-chunk",
+              jobId: job.id,
+              current: index + 1,
+              total: textChunks.length,
+              sampleRate: audio.sampling_rate,
+              samples,
+            }, [samples.buffer]);
           }
 
-          self.postMessage({ type: "complete", audio: encodeWav(audioChunks) });
-        } catch (error) {
           self.postMessage({
-            type: "error",
-            message: error instanceof Error ? error.message : String(error),
+            type: "generation-complete",
+            jobId: job.id,
+            total: textChunks.length,
           });
+        } catch (error) {
+          if (currentJob && currentJob.id === job.id) {
+            self.postMessage({
+              type: "error",
+              jobId: job.id,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+        } finally {
+          finishJob(job.id);
+        }
+      }
+
+      self.addEventListener("message", (event) => {
+        if (event.data.type === "credit") {
+          grantCredit(event.data.jobId);
+          return;
+        }
+        if (event.data.type === "generate") {
+          void generate(event.data);
         }
       });
     `;
@@ -260,115 +356,324 @@
     const form = document.querySelector("#speech-form");
     const text = document.querySelector("#text");
     const button = document.querySelector("#speak");
+    const pauseButton = document.querySelector("#pause");
     const status = document.querySelector("#status");
     const output = document.querySelector("#output");
-    const audio = document.querySelector("#audio");
+    const wordCount = document.querySelector("#word-count");
+    const durationEstimate = document.querySelector("#duration-estimate");
     const workerUrl = URL.createObjectURL(new Blob([workerSource], { type: "text/javascript" }));
 
     let worker = null;
-    let audioUrl = null;
-    let busy = false;
+    let session = null;
+    let starting = false;
+    let nextJobId = 1;
 
-    function setBusy(value, label = "Read aloud") {
-      busy = value;
-      button.disabled = value;
-      button.textContent = label;
+    function countWords(value) {
+      const trimmed = value.trim();
+      return trimmed ? trimmed.split(/\s+/u).length : 0;
     }
 
-    function fail(message) {
-      setBusy(false);
-      status.textContent = "[error] " + message;
+    function updateWordCount(updateStatus = false) {
+      const words = countWords(text.value);
+      const overLimit = words > MAX_WORDS;
+      wordCount.textContent = words.toLocaleString("en-US") + " / 9,000 words";
+      wordCount.dataset.overLimit = String(overLimit);
+      durationEstimate.textContent = words
+        ? "about " + Math.max(1, Math.round(words / 150)) + " min"
+        : "roughly one hour max";
+
+      if (!session) button.disabled = words === 0 || overLimit;
+      if (updateStatus) {
+        if (overLimit) {
+          const excess = words - MAX_WORDS;
+          status.textContent = "[limit] shorten the text by "
+            + excess.toLocaleString("en-US") + (excess === 1 ? " word." : " words.");
+        } else {
+          status.textContent = words
+            ? "[idle] ready to narrate."
+            : "[idle] waiting for text.";
+        }
+      }
+      return words;
+    }
+
+    function updatePlaybackStatus(active) {
+      if (session !== active || active.stopped) return;
+      if (active.paused) {
+        status.textContent = "[paused] section " + Math.min(active.playedChunks + 1, active.totalChunks)
+          + " of " + active.totalChunks + ".";
+      } else if (active.sources.size > 0) {
+        status.textContent = "[playing] section " + Math.min(active.playedChunks + 1, active.totalChunks)
+          + " of " + active.totalChunks + "; generated "
+          + active.generatedChunks + " of " + active.totalChunks + ".";
+      } else if (!active.generationComplete) {
+        status.textContent = "[buffering] generated " + active.generatedChunks
+          + " of " + active.totalChunks + " sections.";
+      }
+    }
+
+    function resetControls() {
+      text.disabled = false;
+      button.textContent = "Read aloud";
+      output.hidden = true;
+      pauseButton.textContent = "Pause";
+      pauseButton.disabled = false;
+      updateWordCount();
+    }
+
+    function stopSources(active) {
+      active.stopped = true;
+      for (const source of active.sources) {
+        try {
+          source.stop();
+        } catch {
+          // The source already ended.
+        }
+      }
+      active.sources.clear();
+      active.pending.length = 0;
+      void active.context.close();
+    }
+
+    function finishNarration(active) {
+      if (session !== active || active.stopped) return;
+      stopSources(active);
+      session = null;
+      resetControls();
+      status.textContent = "[done] narration finished.";
+    }
+
+    function maybeFinish(active) {
+      if (
+        active.generationComplete
+        && active.playedChunks >= active.totalChunks
+        && active.sources.size === 0
+        && active.pending.length === 0
+      ) {
+        finishNarration(active);
+      }
+    }
+
+    function onSourceEnded(active, source) {
+      if (session !== active || active.stopped) return;
+      active.sources.delete(source);
+      active.playedChunks += 1;
+      worker?.postMessage({ type: "credit", jobId: active.id });
+      updatePlaybackStatus(active);
+      maybeFinish(active);
+    }
+
+    function schedulePending(active) {
+      if (session !== active || active.stopped || !active.playbackStarted) return;
+
+      while (active.pending.length > 0) {
+        const audioBuffer = active.pending.shift();
+        const source = active.context.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(active.context.destination);
+        const startAt = Math.max(active.scheduledUntil, active.context.currentTime + 0.05);
+        source.start(startAt);
+        active.scheduledUntil = startAt + audioBuffer.duration + CHUNK_GAP_SECONDS;
+        active.sources.add(source);
+        source.addEventListener("ended", () => onSourceEnded(active, source), { once: true });
+      }
+      updatePlaybackStatus(active);
+    }
+
+    function maybeStartPlayback(active) {
+      if (session !== active || active.stopped) return;
+      if (!active.playbackStarted) {
+        if (active.pending.length < PREBUFFER_CHUNKS && !active.generationComplete) return;
+        active.playbackStarted = true;
+        active.scheduledUntil = active.context.currentTime + 0.08;
+        output.hidden = false;
+        void active.context.resume();
+      }
+      schedulePending(active);
+    }
+
+    function abortNarration(message, isError = false) {
+      const active = session;
+      if (active) {
+        stopSources(active);
+        session = null;
+      }
+      worker?.terminate();
+      worker = null;
+      resetControls();
+      status.textContent = (isError ? "[error] " : "[stopped] ") + message;
+    }
+
+    function handleWorkerMessage(message) {
+      const active = session;
+      if (!active || message.jobId !== active.id) return;
+
+      if (message.type === "loading") {
+        status.textContent = "[loading] downloading the local voice model.";
+        return;
+      }
+
+      if (message.type === "model-progress") {
+        const isModel = message.file.includes("model_quantized.onnx");
+        status.textContent = isModel
+          ? "[loading] model " + Math.round(message.progress) + "%"
+          : "[loading] preparing the voice model.";
+        return;
+      }
+
+      if (message.type === "prepared") {
+        active.totalChunks = message.total;
+        status.textContent = "[working] prepared " + message.total + " narration sections.";
+        return;
+      }
+
+      if (message.type === "generating") {
+        active.generatingChunk = message.current;
+        if (!active.playbackStarted) {
+          status.textContent = "[working] generating section " + message.current
+            + " of " + message.total + ".";
+        }
+        return;
+      }
+
+      if (message.type === "audio-chunk") {
+        const audioBuffer = active.context.createBuffer(
+          1,
+          message.samples.length,
+          message.sampleRate,
+        );
+        audioBuffer.copyToChannel(message.samples, 0);
+        active.pending.push(audioBuffer);
+        active.generatedChunks = message.current;
+        maybeStartPlayback(active);
+        return;
+      }
+
+      if (message.type === "generation-complete") {
+        active.generationComplete = true;
+        maybeStartPlayback(active);
+        maybeFinish(active);
+        return;
+      }
+
+      if (message.type === "error") {
+        abortNarration(message.message, true);
+      }
     }
 
     function ensureWorker() {
       if (worker) return worker;
 
       const instance = new Worker(workerUrl, { type: "module" });
-      instance.addEventListener("message", async (event) => {
-        const message = event.data;
-
-        if (message.type === "loading") {
-          setBusy(true, "Loading voice...");
-          status.textContent = "[loading] downloading the local voice model.";
-          return;
-        }
-
-        if (message.type === "model-progress") {
-          const isModel = message.file.includes("model_quantized.onnx");
-          status.textContent = isModel
-            ? "[loading] model " + Math.round(message.progress) + "%"
-            : "[loading] preparing the voice model.";
-          return;
-        }
-
-        if (message.type === "generating") {
-          setBusy(true, "Generating...");
-          status.textContent = message.total > 1
-            ? "[working] reading section " + message.current + " of " + message.total + "."
-            : "[working] generating speech locally.";
-          return;
-        }
-
-        if (message.type === "error") {
-          fail(message.message);
-          return;
-        }
-
-        if (message.type === "complete") {
-          if (audioUrl) URL.revokeObjectURL(audioUrl);
-          audioUrl = URL.createObjectURL(message.audio);
-          audio.src = audioUrl;
-          output.hidden = false;
-          setBusy(false);
-          status.textContent = "[ready] audio generated.";
-
-          try {
-            await audio.play();
-            status.textContent = "[playing] audio generated locally.";
-          } catch {
-            status.textContent = "[ready] audio generated. press play to hear it.";
-          }
-        }
-      });
-
+      instance.addEventListener("message", (event) => handleWorkerMessage(event.data));
       instance.addEventListener("error", (event) => {
-        fail(event.message || "The speech worker could not start.");
-        instance.terminate();
-        if (worker === instance) worker = null;
+        abortNarration(event.message || "The speech worker could not start.", true);
       });
-
       worker = instance;
       return worker;
     }
 
+    async function startNarration(value) {
+      starting = true;
+      text.disabled = true;
+      button.disabled = true;
+      button.textContent = "Starting...";
+      status.textContent = "[starting] opening the local speech engine.";
+
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) {
+        starting = false;
+        resetControls();
+        status.textContent = "[error] this browser does not support Web Audio.";
+        return;
+      }
+
+      const context = new AudioContextClass();
+      try {
+        await context.resume();
+      } catch {
+        await context.close();
+        starting = false;
+        resetControls();
+        status.textContent = "[error] audio playback could not start.";
+        return;
+      }
+
+      const active = {
+        id: nextJobId,
+        context,
+        pending: [],
+        sources: new Set(),
+        scheduledUntil: 0,
+        totalChunks: 0,
+        generatedChunks: 0,
+        generatingChunk: 0,
+        playedChunks: 0,
+        generationComplete: false,
+        playbackStarted: false,
+        paused: false,
+        stopped: false,
+      };
+      nextJobId += 1;
+      starting = false;
+      session = active;
+      button.disabled = false;
+      button.textContent = "Stop narration";
+      output.hidden = true;
+      status.textContent = "[starting] opening the local speech engine.";
+      ensureWorker().postMessage({
+        type: "generate",
+        id: active.id,
+        text: value,
+        credits: INITIAL_CREDITS,
+      });
+    }
+
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      if (busy) return;
+      if (session) {
+        abortNarration("narration stopped.");
+        return;
+      }
+      if (starting) return;
 
       const value = text.value.trim();
+      const words = updateWordCount();
       if (!value) {
         status.textContent = "[idle] enter some text first.";
         text.focus();
         return;
       }
-
-      setBusy(true, "Starting...");
-      status.textContent = "[starting] opening the local speech engine.";
-      ensureWorker().postMessage({ text: value });
+      if (words > MAX_WORDS) {
+        status.textContent = "[limit] text exceeds the 9,000 word limit.";
+        return;
+      }
+      void startNarration(value);
     });
 
-    audio.addEventListener("play", () => {
-      status.textContent = "[playing] audio generated locally.";
+    pauseButton.addEventListener("click", async () => {
+      const active = session;
+      if (!active || !active.playbackStarted || active.stopped) return;
+
+      if (active.paused) {
+        await active.context.resume();
+        active.paused = false;
+        pauseButton.textContent = "Pause";
+      } else {
+        await active.context.suspend();
+        active.paused = true;
+        pauseButton.textContent = "Resume";
+      }
+      updatePlaybackStatus(active);
     });
 
-    audio.addEventListener("ended", () => {
-      status.textContent = "[ready] playback finished.";
-    });
+    text.addEventListener("input", () => updateWordCount(true));
+    updateWordCount();
 
     window.addEventListener("beforeunload", () => {
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
-      URL.revokeObjectURL(workerUrl);
+      if (session) stopSources(session);
       worker?.terminate();
+      URL.revokeObjectURL(workerUrl);
     });
   </script>
 </body>
