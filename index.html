@@ -3,9 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' blob: 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; worker-src blob:; connect-src https://cdn.jsdelivr.net https://huggingface.co https://*.huggingface.co https://*.hf.co; media-src blob:; style-src 'unsafe-inline'; base-uri 'none'; object-src 'none'; form-action 'none'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' blob: 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; worker-src blob:; connect-src https://cdn.jsdelivr.net https://huggingface.co https://*.huggingface.co https://*.hf.co; media-src blob:; style-src 'unsafe-inline' https://cdn.jsdelivr.net; base-uri 'none'; object-src 'none'; form-action 'none'" />
   <meta name="referrer" content="no-referrer" />
   <title>narrate.sh</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/plyr@3.8.4/dist/plyr.css" />
   <style>
     * { box-sizing: border-box; }
     [hidden] { display: none !important; }
@@ -112,7 +113,25 @@
     .output-actions {
       display: flex;
       justify-content: flex-end;
-      margin-top: 8px;
+      margin-bottom: 8px;
+    }
+    .plyr {
+      --plyr-color-main: #000;
+      --plyr-audio-control-color: #000;
+      --plyr-audio-control-color-hover: #fff;
+      --plyr-audio-controls-background: #fff;
+      --plyr-audio-progress-buffered-background: #aaa;
+      --plyr-audio-range-track-background: #ddd;
+      --plyr-focus-visible-color: #000;
+      --plyr-range-fill-background: #000;
+      --plyr-range-track-height: 8px;
+      --plyr-range-thumb-background: #fff;
+      --plyr-range-thumb-height: 16px;
+      --plyr-range-thumb-shadow: 0 0 0 2px #000;
+    }
+    .plyr--audio .plyr__controls {
+      border: 1px solid #000;
+      border-radius: 0;
     }
     .secondary-button,
     .clear-history-button {
@@ -225,10 +244,10 @@
     </form>
 
     <div id="output" class="output" hidden>
-      <audio id="audio" controls preload="metadata"></audio>
       <div class="output-actions">
         <button id="new-narration" type="button" class="secondary-button">Generate new</button>
       </div>
+      <audio id="audio" controls preload="metadata"></audio>
     </div>
 
     <section class="history" aria-labelledby="history-heading">
@@ -251,12 +270,13 @@
     const INITIAL_CREDITS = 1;
     const CHUNK_GAP_SECONDS = 0.08;
     const PRELOAD_JOB_ID = 0;
+    const MOBILE_SAFE_MODE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+      || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
     const workerSource = `
       let KokoroTTS;
       let TextSplitterStream;
       const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
-      const MOBILE_SAFE_MODE = /Android|iPhone|iPad|iPod|Mobile/i.test(self.navigator.userAgent)
-        || (self.navigator.platform === "MacIntel" && self.navigator.maxTouchPoints > 1);
+      const MOBILE_SAFE_MODE = ${MOBILE_SAFE_MODE};
       if (MOBILE_SAFE_MODE) {
         try {
           Object.defineProperty(self.navigator, "hardwareConcurrency", { value: 1 });
@@ -614,6 +634,37 @@
     let audioMode = "none";
     let positionSaveTimer = null;
     let historyRecords = [];
+    let player = null;
+    async function initializePlayer() {
+      try {
+        const { default: Plyr } = await import(
+          "https://cdn.jsdelivr.net/npm/plyr@3.8.4/+esm"
+        );
+        player = new Plyr(audio, {
+          iconUrl: "https://cdn.jsdelivr.net/npm/plyr@3.8.4/dist/plyr.svg",
+          controls: [
+            "play",
+            "progress",
+            "current-time",
+            "duration",
+            "mute",
+            "volume",
+            "settings",
+          ],
+          settings: ["speed"],
+          speed: {
+            selected: 1,
+            options: [0.75, 1, 1.25, 1.5, 2],
+          },
+          tooltips: {
+            controls: true,
+            seek: true,
+          },
+        });
+      } catch {
+        audio.controls = true;
+      }
+    }
 
     function openDatabase() {
       databasePromise ??= new Promise((resolve, reject) => {
@@ -1126,12 +1177,16 @@
       updateActionButtons();
     }
 
-    async function stopGeneration(message, isError = false) {
-      const active = generation;
-      generation = null;
+    function releaseSpeechWorker() {
       worker?.terminate();
       worker = null;
       workerMessages = Promise.resolve();
+    }
+
+    async function stopGeneration(message, isError = false) {
+      const active = generation;
+      generation = null;
+      releaseSpeechWorker();
       if (active && savedSession) {
         savedSession.state = "incomplete";
         savedSession.position = currentGlobalPosition();
@@ -1160,6 +1215,7 @@
       resetControls();
       await setAudioBlob(file, position, autoplay, "complete");
       await refreshHistory();
+      if (MOBILE_SAFE_MODE) releaseSpeechWorker();
       status.textContent = autoplay && !audio.paused
         ? "[playing] narration generated and saved locally."
         : "[ready] narration generated and saved locally.";
@@ -1181,9 +1237,11 @@
             ? "[loading] " + message.backend + " model " + Math.round(message.progress) + "%"
             : "[loading] preparing the " + message.backend + " voice model.";
         } else if (message.type === "preload-complete" && !generation) {
+          const availability = message.mobileSafe ? " model cached." : " model ready.";
           status.textContent = savedSession
-            ? "[saved] narration restored; " + message.backend + " model ready."
-            : "[idle] " + message.backend + " model ready.";
+            ? "[saved] narration restored; " + message.backend + availability
+            : "[idle] " + message.backend + availability;
+          if (message.mobileSafe) releaseSpeechWorker();
         } else if (message.type === "preload-error" && !generation) {
           status.textContent = "[idle] model download will retry when narration starts.";
         }
@@ -1479,6 +1537,10 @@
       ) {
         return;
       }
+      if (MOBILE_SAFE_MODE) {
+        releaseSpeechWorker();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
 
       starting = true;
       updateActionButtons();
@@ -1608,7 +1670,7 @@
       }
     });
 
-    void restoreSession();
+    void initializePlayer().then(() => restoreSession());
     ensureWorker().postMessage({ type: "preload", id: PRELOAD_JOB_ID });
 
     window.addEventListener("beforeunload", () => {
