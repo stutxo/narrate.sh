@@ -124,8 +124,8 @@
       <label for="text">Text</label>
       <textarea id="text" name="text" required autofocus placeholder="Type something to read aloud."></textarea>
       <div class="meta-row">
-        <span id="word-count" class="word-count">0 / 9,000 words</span>
-        <span id="duration-estimate">roughly one hour max</span>
+        <span id="word-count" class="word-count">0 / 10,000 words</span>
+        <span id="duration-estimate">about 67 minutes max</span>
       </div>
       <button id="speak" type="submit" disabled>Read aloud</button>
       <p id="status" class="status" role="status" aria-live="polite">[idle] waiting for text.</p>
@@ -135,11 +135,11 @@
       <button id="pause" type="button" class="secondary">Pause</button>
     </div>
 
-    <p class="note">Up to 9,000 words. Audio is generated and played in small local sections, so long narration does not build one giant file in memory. The first run downloads and caches about 100 MB; the text is not sent anywhere.</p>
+    <p class="note">Up to 10,000 words. Audio is generated and played in small local sections, so long narration does not build one giant file in memory. The first run downloads and caches about 100 MB; the text is not sent anywhere.</p>
   </main>
 
   <script type="module">
-    const MAX_WORDS = 9000;
+    const MAX_WORDS = 10000;
     const INITIAL_CREDITS = 3;
     const PREBUFFER_CHUNKS = 2;
     const CHUNK_GAP_SECONDS = 0.08;
@@ -272,7 +272,7 @@
           self.postMessage({
             type: "error",
             jobId: job.id,
-            message: "Text exceeds the 9,000 word limit.",
+            message: "Text exceeds the 10,000 word limit.",
           });
           return;
         }
@@ -376,11 +376,12 @@
     function updateWordCount(updateStatus = false) {
       const words = countWords(text.value);
       const overLimit = words > MAX_WORDS;
-      wordCount.textContent = words.toLocaleString("en-US") + " / 9,000 words";
+      wordCount.textContent = words.toLocaleString("en-US") + " / "
+        + MAX_WORDS.toLocaleString("en-US") + " words";
       wordCount.dataset.overLimit = String(overLimit);
       durationEstimate.textContent = words
         ? "about " + Math.max(1, Math.round(words / 150)) + " min"
-        : "roughly one hour max";
+        : "about " + Math.ceil(MAX_WORDS / 150) + " min max";
 
       if (!session) button.disabled = words === 0 || overLimit;
       if (updateStatus) {
@@ -645,7 +646,8 @@
         return;
       }
       if (words > MAX_WORDS) {
-        status.textContent = "[limit] text exceeds the 9,000 word limit.";
+        status.textContent = "[limit] text exceeds the "
+          + MAX_WORDS.toLocaleString("en-US") + " word limit.";
         return;
       }
       void startNarration(value);
