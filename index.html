@@ -112,7 +112,9 @@
     }
     .output-actions {
       display: flex;
+      flex-wrap: wrap;
       justify-content: flex-end;
+      gap: 8px;
       margin-bottom: 8px;
     }
     .plyr {
@@ -245,6 +247,7 @@
 
     <div id="output" class="output" hidden>
       <div class="output-actions">
+        <button id="export-audio" type="button" class="secondary-button" disabled>Download WAV</button>
         <button id="new-narration" type="button" class="secondary-button">Generate new</button>
       </div>
       <audio id="audio" controls preload="metadata"></audio>
@@ -616,11 +619,24 @@
     const newNarrationButton = document.querySelector("#new-narration");
     const historyUsage = document.querySelector("#history-usage");
     const historyList = document.querySelector("#history-list");
+    const exportAudioButton = document.querySelector("#export-audio");
     const historyEmpty = document.querySelector("#history-empty");
     const clearHistoryButton = document.querySelector("#clear-history");
     const modelRuntime = document.querySelector("#model-runtime");
     const wordCount = document.querySelector("#word-count");
     const durationEstimate = document.querySelector("#duration-estimate");
+    const CAN_SHARE_AUDIO_FILES = (() => {
+      if (typeof navigator.share !== "function" || typeof navigator.canShare !== "function") {
+        return false;
+      }
+      try {
+        const probe = new File([], "narration.wav", { type: "audio/wav" });
+        return navigator.canShare({ files: [probe] });
+      } catch {
+        return false;
+      }
+    })();
+    exportAudioButton.textContent = CAN_SHARE_AUDIO_FILES ? "Share audio" : "Download WAV";
     const workerUrl = URL.createObjectURL(new Blob([workerSource], { type: "text/javascript" }));
 
     let databasePromise = null;
@@ -633,6 +649,7 @@
     let audioUrl = null;
     let audioMode = "none";
     let positionSaveTimer = null;
+    let currentAudioBlob = null;
     let historyRecords = [];
     let player = null;
     async function initializePlayer() {
@@ -896,10 +913,59 @@
       const normalized = value.replace(/\s+/gu, " ").trim();
       return normalized.length > 72 ? normalized.slice(0, 71) + "…" : normalized;
     }
+    function narrationFileName(record) {
+      const slug = (record?.text || "narration")
+        .toLowerCase()
+        .replace(/['’]/gu, "")
+        .replace(/[^a-z0-9]+/gu, "-")
+        .replace(/^-+|-+$/gu, "")
+        .slice(0, 48)
+        .replace(/-+$/gu, "");
+      const createdAt = new Date(record?.createdAt || Date.now());
+      const date = Number.isNaN(createdAt.getTime())
+        ? new Date().toISOString().slice(0, 10)
+        : createdAt.toISOString().slice(0, 10);
+      return (slug || "narration") + "-" + date + ".wav";
+    }
+
+    function downloadAudioFile(file) {
+      const downloadUrl = URL.createObjectURL(file);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = file.name;
+      link.hidden = true;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+    }
+
+    async function exportAudio() {
+      if (!currentAudioBlob || audioMode !== "complete") return;
+      const file = new File([currentAudioBlob], narrationFileName(savedSession), {
+        type: "audio/wav",
+        lastModified: savedSession?.updatedAt || Date.now(),
+      });
+
+      try {
+        if (CAN_SHARE_AUDIO_FILES) {
+          await navigator.share({ files: [file], title: "Narration" });
+          status.textContent = "[shared] narration sent to the share sheet.";
+        } else {
+          downloadAudioFile(file);
+          status.textContent = "[saved] WAV download started.";
+        }
+      } catch (error) {
+        if (error.name !== "AbortError") {
+          status.textContent = "[error] narration could not be exported: " + error.message;
+        }
+      }
+    }
 
     function updateActionButtons() {
       const busy = Boolean(generation || starting);
       newNarrationButton.disabled = busy;
+      exportAudioButton.disabled = busy || !currentAudioBlob || audioMode !== "complete";
       clearHistoryButton.disabled = busy || historyRecords.length === 0;
     }
 
@@ -1074,11 +1140,13 @@
     async function setAudioBlob(blob, position = 0, autoplay = false, mode = "complete") {
       const previousUrl = audioUrl;
       audio.pause();
+      currentAudioBlob = blob;
       audioUrl = URL.createObjectURL(blob);
       audioMode = mode;
       audio.src = audioUrl;
       audio.load();
       output.hidden = false;
+      updateActionButtons();
       await waitForMetadata();
       audio.currentTime = Math.max(0, Math.min(position, Number.isFinite(audio.duration) ? audio.duration : position));
       if (previousUrl) URL.revokeObjectURL(previousUrl);
@@ -1097,6 +1165,7 @@
       audio.load();
       output.hidden = true;
       audioMode = "none";
+      currentAudioBlob = null;
       if (audioUrl) URL.revokeObjectURL(audioUrl);
       audioUrl = null;
     }
@@ -1634,6 +1703,7 @@
     });
 
     text.addEventListener("input", () => updateWordCount(true));
+    exportAudioButton.addEventListener("click", () => void exportAudio());
     newNarrationButton.addEventListener("click", () => void beginNewNarration());
     clearHistoryButton.addEventListener("click", () => void clearNarrationHistory());
     historyList.addEventListener("click", (event) => {
