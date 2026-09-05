@@ -6,3 +6,18 @@
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=()
+
+/
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
+/app.js
+  Cache-Control: no-cache
+/speech-worker.js
+  Cache-Control: no-cache
+/streaming-player.js
+  Cache-Control: no-cache
+/vendor/media/runtime.js
+  Cache-Control: no-cache
+/vendor/kitten/runtime.js
+  Cache-Control: no-cache

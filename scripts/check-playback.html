@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>narrate.sh playback checks</title>
+<style>
+  body { max-width: 760px; margin: 32px auto; padding: 0 16px; font: 16px/1.5 system-ui; }
+  button { padding: 10px; margin: 4px; } audio { display: block; width: 100%; margin: 20px 0; }
+  pre { white-space: pre-wrap; } .note { color: #555; }
+</style>
+<h1>Native playback checks</h1>
+<p>Serve this repository over localhost or HTTPS, then open this page in the browser being tested. Each button supplies the playback gesture required on iPhone.</p>
+<p class="note">Uses generated tones and the real native encoder/player. No model download, microphone, or npm installation. Test Safari 26 on a physical iPhone for its AAC and ManagedMediaSource path.</p>
+<p id="support">Checking native streaming support…</p>
+<button disabled data-test="stream">Streaming, pause, seeking, final audio</button>
+<button disabled data-test="position">Saved playback position</button>
+<button disabled data-test="cancel">Cancel pending work</button>
+<audio controls></audio>
+<pre id="result" aria-live="polite"></pre>
+<script type="module">
+import { getStreamConfig, StreamingPlayer } from '../streaming-player.js?v=4';
+const audio = document.querySelector('audio'), result = document.querySelector('#result');
+const buttons = [...document.querySelectorAll('button')];
+const config = await getStreamConfig();
+let player;
+document.querySelector('#support').textContent = config
+  ? `${config.codec.toUpperCase()} · ${config.Source.name}` : 'This browser has no supported native streaming encoder/player.';
+buttons.forEach(button => { button.disabled = !config; });
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const log = message => { result.textContent += message + '\n'; };
+async function waitFor(condition, label) {
+  const deadline = performance.now() + 15000;
+  while (!condition()) {
+    if (player.error) throw player.error;
+    if (performance.now() > deadline) throw new Error(`Timed out: ${label}`);
+    await new Promise(resolve => setTimeout(resolve, 40));
+  }
+}
+function buffered(time) {
+  for (let i = 0; i < audio.buffered.length; i++) {
+    if (audio.buffered.start(i) <= time && audio.buffered.end(i) > time) return true;
+  }
+  return false;
+}
+function wav(seconds) {
+  const count = Math.round(seconds * 24000), bytes = new ArrayBuffer(44 + count * 2), view = new DataView(bytes);
+  const ascii = (offset, text) => [...text].forEach((letter, i) => view.setUint8(offset + i, letter.charCodeAt(0)));
+  ascii(0, 'RIFF'); view.setUint32(4, bytes.byteLength - 8, true); ascii(8, 'WAVEfmt ');
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, 24000, true); view.setUint32(28, 48000, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  ascii(36, 'data'); view.setUint32(40, count * 2, true);
+  for (let i = 0; i < count; i++) view.setInt16(44 + i * 2, Math.round(Math.sin(i * 2 * Math.PI * 220 / 24000) * 1600), true);
+  return new Blob([bytes], { type: 'audio/wav' });
+}
+for (const button of buttons) button.addEventListener('click', async () => {
+  player?.dispose();
+  result.textContent = '';
+  buttons.forEach(button => { button.disabled = true; });
+  let ready = 0, errors = 0;
+  const position = button.dataset.test === 'position' ? 5 : 0;
+  player = new StreamingPlayer(audio, config, { position, onready: () => ready++, onerror: error => { errors++; log(error.message); } });
+  // Keep this call synchronous with the click; Safari must grant playback here.
+  if (button.dataset.test !== 'cancel') void audio.play().catch(error => log(`Playback: ${error.message}`));
+  try {
+    if (button.dataset.test === 'cancel') {
+      const pending = [player.ready, player.append(wav(2)), player.finish()];
+      player.dispose();
+      const settled = await Promise.allSettled(pending);
+      assert(settled.every(value => value.status === 'rejected' && value.reason.name === 'AbortError'), 'Pending work did not abort promptly.');
+      assert(!ready && !errors, 'Disposed player delivered a late callback.');
+      log('PASS: pending setup, append, and finish abort without late callbacks.');
+    } else if (button.dataset.test === 'position') {
+      await player.append(wav(2)); await player.append(wav(2));
+      assert(ready === 0 && audio.currentTime < .001, 'Playback began before the saved position was available.');
+      await player.append(wav(2));
+      await waitFor(() => ready === 1 && audio.currentTime >= 5, 'saved position becomes playable');
+      log('PASS: playback starts at saved position 5s, without replaying the beginning.');
+    } else {
+      const url = audio.src, two = wav(2);
+      await player.append(wav(2.025));
+      await waitFor(() => audio.currentTime > .1, 'first audio before generation finishes');
+      await player.append(two);
+      await waitFor(() => audio.currentTime > 2.1, 'continuous playback across input chunks');
+      assert(audio.src === url && ready === 1, 'Player source changed or initialized more than once.');
+      audio.pause(); const paused = audio.currentTime;
+      for (let i = 0; i < 45; i++) await player.append(two);
+      await player.finish();
+      assert(audio.paused && Math.abs(audio.currentTime - paused) < .1, 'Appending changed paused playback.');
+      assert(!audio.buffered.length || audio.buffered.end(audio.buffered.length - 1) < paused + 62, 'Native buffer grew beyond its window.');
+      log('PASS: early continuous playback, stable source, pause retention, bounded native buffer.');
+      await audio.play(); audio.currentTime = 85;
+      await waitFor(() => buffered(85), 'forward seek into retained compressed audio');
+      await waitFor(() => player.source.readyState === 'ended', 'last encoded fragment');
+      assert(audio.duration + .001 >= player.duration, 'Final partial codec frame was lost.');
+      audio.currentTime = 1;
+      await waitFor(() => buffered(1), 'backward seek into previously evicted audio');
+      assert(!errors, 'Streaming reported an error.');
+      log(`PASS: forward/backward rebuffer seeks and full ${player.duration.toFixed(3)}s input including its final partial frame.`);
+    }
+  } catch (error) { log(`FAIL: ${error.message}`); }
+  finally { player.dispose(); buttons.forEach(button => { button.disabled = !config; }); }
+});
+</script>
+</html>
