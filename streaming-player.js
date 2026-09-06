@@ -1,4 +1,4 @@
-import { Output, NullTarget, Mp4OutputFormat, AudioSampleSource, AudioSample, Quality } from './vendor/media/runtime.js?v=7';
+import { Output, NullTarget, Mp4OutputFormat, AudioSampleSource, AudioSample, Quality } from './vendor/media/runtime.js?v=8';
 
 export async function getStreamConfig() {
   const Source = globalThis.ManagedMediaSource || globalThis.MediaSource;
@@ -8,7 +8,7 @@ export async function getStreamConfig() {
     try {
       if (Source.isTypeSupported(mime) && (await AudioEncoder.isConfigSupported({
         codec: name, sampleRate: 24000, numberOfChannels: 1, bitrate: 64000,
-      })).supported) return { Source, codec, mime };
+      })).supported) return { Source, codec, mime, fullCodecString: name };
     } catch { /* Try the next native codec. */ }
   }
   return null;
@@ -92,7 +92,10 @@ export class StreamingPlayer {
         },
       }),
     });
-    this.encoder = new AudioSampleSource({ codec: this.config.codec, quality: new Quality({ bitrate: 64000 }) });
+    // Match the probed SourceBuffer codec. At 24 kHz the library otherwise
+    // chooses HE-AAC, even though this stream advertises AAC-LC.
+    this.encoder = new AudioSampleSource({ codec: this.config.codec, fullCodecString: this.config.fullCodecString,
+      quality: new Quality({ bitrate: 64000 }) });
     this.output.addAudioTrack(this.encoder);
     await this.output.start();
   }

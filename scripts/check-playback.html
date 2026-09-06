@@ -22,14 +22,14 @@
 <audio controls></audio>
 <pre id="result" aria-live="polite"></pre>
 <script type="module">
-import { getStreamConfig, StreamingPlayer } from '../streaming-player.js?v=7';
+import { getStreamConfig, StreamingPlayer } from '../streaming-player.js?v=8';
 const audio = document.querySelector('audio'), result = document.querySelector('#result');
 const buttons = [...document.querySelectorAll('button')];
 const config = await getStreamConfig();
 let player;
 window.addEventListener('unhandledrejection', event => log(`UNHANDLED: ${event.reason?.message || event.reason}`));
 document.querySelector('#support').textContent = config
-  ? `${config.codec.toUpperCase()} · ${config.Source.name}` : 'This browser has no supported native streaming encoder/player.';
+  ? `${config.fullCodecString} · ${config.Source.name}` : 'This browser has no supported native streaming encoder/player.';
 buttons.forEach(button => { button.disabled = !config; });
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const log = message => { result.textContent += message + '\n'; };

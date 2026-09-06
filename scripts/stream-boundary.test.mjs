@@ -6,6 +6,69 @@ let environment;
 before(async () => { environment = await startBrowser(); });
 after(async () => { await environment?.close(); });
 
+test('the vendored encoder uses the same AAC profile as the capability probe and SourceBuffer', { timeout: 15000 }, async t => {
+  const context = await environment.browser.newContext();
+  t.after(() => context.close());
+  const page = await context.newPage();
+  await page.route('**/__aac-profile', route => route.fulfill({ contentType: 'text/html', body: '<audio></audio>' }));
+  if (process.env.NARRATE_STREAM_TEST_MODULE) {
+    await page.route('**/streaming-player.js', route => route.fulfill({
+      path: process.env.NARRATE_STREAM_TEST_MODULE, contentType: 'application/javascript',
+    }));
+  }
+  await page.goto(`${environment.url}/__aac-profile`);
+  const result = await page.evaluate(async () => {
+    if (!globalThis.MediaSource?.isTypeSupported('audio/mp4; codecs="opus"') || !globalThis.AudioData) return null;
+    const trace = { probes: [], configured: null, sourceMime: null, encoded: 0, errors: [] };
+    // Linux has no native AAC encoder. Advertise AAC-LC alone, then exercise the
+    // actual vendored AudioSampleSource configuration with real PCM input.
+    window.AudioEncoder = class extends EventTarget {
+      static async isConfigSupported(config) {
+        trace.probes.push(config.codec);
+        return { config, supported: config.codec === 'mp4a.40.2' };
+      }
+      state = 'unconfigured';
+      encodeQueueSize = 0;
+      configure(config) { trace.configured = config; this.state = 'configured'; }
+      encode() { trace.encoded++; }
+      flush() { return Promise.resolve(); }
+      close() { this.state = 'closed'; }
+    };
+    window.ManagedMediaSource = class extends MediaSource {
+      static isTypeSupported(mime) { return mime === 'audio/mp4; codecs="mp4a.40.2"'; }
+      addSourceBuffer(mime) {
+        trace.sourceMime = mime;
+        // Keep the native source lifecycle; no encoded packets are supplied in
+        // this configuration-only test, so AAC decoding is unnecessary.
+        return super.addSourceBuffer('audio/mp4; codecs="opus"');
+      }
+    };
+    const { getStreamConfig, StreamingPlayer } = await import('/streaming-player.js');
+    const config = await getStreamConfig();
+    if (!config) return { ...trace, error: 'AAC-LC was incorrectly rejected.' };
+    const bytes = new ArrayBuffer(44 + 4800), view = new DataView(bytes);
+    const text = (at, value) => [...value].forEach((letter, i) => view.setUint8(at + i, letter.charCodeAt(0)));
+    text(0, 'RIFF'); view.setUint32(4, bytes.byteLength - 8, true); text(8, 'WAVEfmt ');
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, 24000, true); view.setUint32(28, 48000, true);
+    view.setUint16(32, 2, true); view.setUint16(34, 16, true); text(36, 'data'); view.setUint32(40, 4800, true);
+    const player = new StreamingPlayer(document.querySelector('audio'), config, { onerror: error => trace.errors.push(error.message) });
+    try { await player.append(new Blob([bytes], { type: 'audio/wav' })); }
+    catch (error) { trace.errors.push(error.message); }
+    finally { player.dispose(); }
+    return trace;
+  });
+  if (!result) { t.skip('The browser has no native MediaSource/AudioData support.'); return; }
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.sourceMime, 'audio/mp4; codecs="mp4a.40.2"');
+  assert.equal(result.configured?.codec, 'mp4a.40.2', 'AAC-LC capability must not configure the vendored 24 kHz HE-AAC default.');
+  assert.equal(result.configured.sampleRate, 24000);
+  assert.equal(result.configured.numberOfChannels, 1);
+  assert(result.probes.length >= 2, 'Both the player and vendored encoder check the chosen profile.');
+  assert(result.probes.every(codec => codec === 'mp4a.40.2'));
+  assert(result.encoded > 0, 'The configuration is exercised by encoding a saved PCM chunk.');
+});
+
 // Exercise actual encoding, MP4 muxing, and SourceBuffer operations. Offsetting
 // encoded timestamps reproduces the small leading gap exposed by Safari AAC.
 async function open(t, { gap = 0, streaming = true, seconds = 2.025 } = {}) {

@@ -29,6 +29,7 @@
     #output { margin-top: 18px; }
     audio { width: 100%; }
     #new-session { margin-top: 18px; }
+    .source { display: block; width: fit-content; padding: 12px 0; color: inherit; font-size: .8rem; }
     .plyr { --plyr-color-main: #000; --plyr-audio-controls-background: #fff; --plyr-audio-control-color: #000; --plyr-audio-control-color-hover: #fff; --plyr-range-fill-background: #000; }
     .plyr--audio .plyr__controls { border: 1px solid #000; border-radius: 0; }
   </style>
@@ -48,7 +49,8 @@
       <audio id="audio" controls controlslist="nodownload" disableremoteplayback preload="metadata"></audio>
     </div>
     <button id="new-session" type="button" disabled>New session</button>
+    <a class="source" href="https://github.com/stutxo/narrate.sh" target="_blank" rel="noopener noreferrer">Source on GitHub</a>
   </main>
-  <script type="module" src="./app.js?v=7"></script>
+  <script type="module" src="./app.js?v=8"></script>
 </body>
 </html>

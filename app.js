@@ -1,4 +1,4 @@
-import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=7";
+import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=8";
 
 const $ = (id) => document.getElementById(id);
 const text = $("text"), button = $("speak"), status = $("status"), audio = $("audio");
@@ -184,7 +184,7 @@ function closeWorker() {
 }
 function synthesize(value) {
   if (!worker) {
-    worker = new Worker("./speech-worker.js?v=7", { type: "module" });
+    worker = new Worker("./speech-worker.js?v=8", { type: "module" });
     worker.onmessage = ({ data }) => {
       if (!pending || data.id !== pending.id) return;
       if (data.type === "status") {
