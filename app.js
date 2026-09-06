@@ -3,7 +3,7 @@ import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=5";
 const $ = (id) => document.getElementById(id);
 const text = $("text"), button = $("speak"), status = $("status"), audio = $("audio");
 const MAX_WORDS = 10000;
-const freshSession = () => ({ text: "", parts: [], generated: 0, position: 0, rate: 1 });
+const freshSession = () => ({ text: "", parts: [], generated: 0, position: 0, rate: 1.5 });
 let session = freshSession(), database, gpuReady = false, running = false, cancelled = false;
 let worker, pending, jobId = 0, audioUrl, playbackRequest = 0, loadingAudio = false;
 let writes = Promise.resolve(), saveTimer, lastPositionSave = 0, wakeLock;
