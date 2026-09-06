@@ -36,6 +36,112 @@ test("slow speech recovers after running out of audio, and the completed track r
   cleanErrors(errors);
 });
 
+test("interrupted initial Play recovers when speech is ready without a refresh", { timeout: 20000 }, async t => {
+  const app = await openApp(environment, { initialPlayError: "AbortError" });
+  t.after(app.close);
+  const { page, errors } = app;
+  await begin(page, [PASSAGE, PASSAGE].join(" ")); await reply(page);
+  await page.waitForFunction(() => document.querySelector("#audio").currentTime > .1, undefined, { timeout: 6000 });
+  assert.equal((await session(page)).generated, 1);
+  assert.equal(await page.locator("#speak").textContent(), "Stop generation", "Interrupted playback recovers before all speech is generated");
+  assert.equal((await audioState(page)).rate, 1.5);
+  await reply(page); await waitStopped(page);
+  cleanErrors(errors);
+});
+
+test("denied autoplay keeps a Play prompt and works on a player click without refresh", { timeout: 20000 }, async t => {
+  const app = await openApp(environment, { requirePlayerGesture: true });
+  t.after(app.close);
+  const { page, errors } = app;
+  await begin(page, PASSAGE); await reply(page); await waitStopped(page);
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+  await page.waitForFunction(() => /(press|tap).{0,30}play/i.test(document.querySelector("#status").textContent), undefined, { timeout: 6000 });
+  assert.equal((await audioState(page)).paused, true);
+  assert.equal((await session(page)).generated, 1);
+  await page.locator('button[data-plyr="play"]').first().click();
+  await page.waitForFunction(() => document.querySelector("#audio").currentTime > .1);
+  cleanErrors(errors);
+});
+
+test("pausing before the first speech arrives prevents an automatic playback retry", { timeout: 20000 }, async t => {
+  const app = await openApp(environment);
+  t.after(app.close);
+  const { page, errors } = app;
+  await begin(page, [PASSAGE, PASSAGE].join(" "));
+  assert.equal((await audioState(page)).paused, false, "The initial native Play is waiting for speech");
+  await page.locator('button[data-plyr="play"]').first().click();
+  await page.waitForFunction(() => document.querySelector("#audio").paused);
+  await reply(page);
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+  assert.equal((await audioState(page)).paused, true);
+  assert((await audioState(page)).time < .01, "Buffered speech does not override a user's pause");
+  await reply(page); await waitStopped(page);
+  assert.equal((await audioState(page)).paused, true);
+  assert((await audioState(page)).time < .01);
+  await page.locator('button[data-plyr="play"]').first().click();
+  await page.waitForFunction(() => document.querySelector("#audio").currentTime > .1);
+  cleanErrors(errors);
+});
+
+test("completed managed streaming becomes playable saved audio without losing playback preferences", { timeout: 20000 }, async t => {
+  const app = await openApp(environment, { managedMedia: true, seconds: 3 });
+  t.after(app.close);
+  const { page, errors } = app;
+  await begin(page, [PASSAGE, PASSAGE].join(" ")); await reply(page);
+  await page.waitForFunction(() => document.querySelector("#audio").currentTime > .1);
+  const streamingSource = (await audioState(page)).src;
+  await page.locator('button[data-plyr="play"]').first().click();
+  await page.locator("#audio").evaluate(audio => { audio.currentTime = .6; audio.playbackRate = 1.25; });
+  await waitSession(page, saved => Math.abs(saved.position - .6) < .05 && saved.rate === 1.25);
+  await reply(page); await waitStopped(page);
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+  const completed = await audioState(page);
+  assert.notEqual(completed.src, streamingSource, "The completed managed stream is replaced with saved audio");
+  assert.equal(completed.duration, 6); assert.equal(completed.rate, 1.25); assert.equal(completed.paused, true);
+  assert(Math.abs(completed.time - .6) < .05);
+  assert.equal(await page.evaluate(() => window.__speech.liveUrls.size), 1, "The managed source is released after handoff");
+  assert.deepEqual((await session(page)).audioKeys, [0, 1]);
+  await page.locator('button[data-plyr="play"]').first().click();
+  await page.waitForFunction(() => document.querySelector("#audio").currentTime > .8);
+  cleanErrors(errors);
+});
+
+test("active managed playback continues through completion and still honors Pause", { timeout: 20000 }, async t => {
+  const app = await openApp(environment, { managedMedia: true, seconds: 3 });
+  t.after(app.close);
+  const { page, errors } = app;
+  await begin(page, [PASSAGE, PASSAGE].join(" ")); await reply(page);
+  await page.waitForFunction(() => document.querySelector("#audio").currentTime > .1);
+  const streaming = await audioState(page);
+  await reply(page); await waitStopped(page);
+  await page.waitForFunction(time => document.querySelector("#audio").currentTime > time + .15, streaming.time);
+  const completed = await audioState(page);
+  assert.notEqual(completed.src, streaming.src);
+  assert.equal(completed.duration, 6); assert.equal(completed.paused, false); assert.equal(completed.rate, 1.5);
+  await page.locator('button[data-plyr="play"]').first().click();
+  await page.waitForFunction(() => document.querySelector("#audio").paused);
+  const paused = await audioState(page);
+  await waitSession(page, saved => Math.abs(saved.position - paused.time) < .05);
+  await page.waitForTimeout(150);
+  assert.equal((await audioState(page)).paused, true, "A user pause after handoff is not mistaken for an internal source-change pause");
+  assert(Math.abs((await audioState(page)).time - paused.time) < .05);
+  await page.locator('button[data-plyr="play"]').first().click();
+  await page.waitForFunction(time => document.querySelector("#audio").currentTime > time + .1, paused.time);
+  await page.locator("#new-session").click();
+  await waitSession(page, saved => saved.text === "" && saved.audioKeys.length === 0);
+  await begin(page, [PASSAGE, PASSAGE].join(" "));
+  await page.locator('button[data-plyr="play"]').first().click();
+  await page.waitForFunction(() => document.querySelector("#audio").paused);
+  await reply(page);
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+  await page.waitForTimeout(100);
+  assert.equal((await audioState(page)).paused, true, "An old source change cannot swallow a new session's Pause");
+  assert((await audioState(page)).time < .01);
+  await reply(page); await waitStopped(page);
+  assert.equal((await audioState(page)).paused, true);
+  cleanErrors(errors);
+});
+
 test("late external player initialization preserves ongoing playback", { timeout: 25000 }, async t => {
   const app = await openApp(environment, { delayPlyr: true, seconds: 4 });
   t.after(() => { app.releasePlyr(); return app.close(); });

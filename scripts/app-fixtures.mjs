@@ -47,7 +47,28 @@ function installControls(options) {
     requestAdapter: async () => { if (options.gpu === "reject" || sessionStorage.getItem("test-gpu") === "reject") throw new Error("Adapter unavailable"); return {}; },
   } });
   if (options.noEncoder) window.AudioEncoder = undefined;
+  if (options.managedMedia) {
+    // Keep native MediaSource decoding; expose only the managed lifecycle flag.
+    window.ManagedMediaSource = class extends MediaSource { get streaming() { return true; } };
+  }
   if (options.autoplayDenied) HTMLMediaElement.prototype.play = () => Promise.reject(new DOMException("Playback needs a user gesture.", "NotAllowedError"));
+  if (options.initialPlayError || options.requirePlayerGesture) {
+    const play = HTMLMediaElement.prototype.play;
+    let interrupted = false;
+    document.addEventListener("click", event => {
+      if (event.isTrusted && event.target.closest('button[data-plyr="play"]')) controls.playerGesture = true;
+    }, true);
+    HTMLMediaElement.prototype.play = function () {
+      if (this.id === "audio") {
+        if (options.requirePlayerGesture && !controls.playerGesture) return Promise.reject(new DOMException("Playback needs a user gesture.", "NotAllowedError"));
+        if (options.initialPlayError && !interrupted && controls.liveUrls.get(this.src) === "MediaSource") {
+          interrupted = true;
+          return Promise.reject(new DOMException("Initial streaming playback was interrupted.", options.initialPlayError));
+        }
+      }
+      return play.call(this);
+    };
+  }
   if (options.holdFinish && window.AudioEncoder) {
     const flush = AudioEncoder.prototype.flush;
     AudioEncoder.prototype.flush = function () {

@@ -1,4 +1,4 @@
-import { Output, NullTarget, Mp4OutputFormat, AudioSampleSource, AudioSample, Quality } from './vendor/media/runtime.js?v=5';
+import { Output, NullTarget, Mp4OutputFormat, AudioSampleSource, AudioSample, Quality } from './vendor/media/runtime.js?v=6';
 
 export async function getStreamConfig() {
   const Source = globalThis.ManagedMediaSource || globalThis.MediaSource;
@@ -170,6 +170,12 @@ export class StreamingPlayer {
     if (this.source.duration !== duration) this.source.duration = duration;
   }
 
+  alignStart() {
+    const start = this.fragments[0]?.start;
+    // Native AAC may begin just after zero. This also handles seeking back to 0.
+    if (start > 0 && start <= .25 && this.audio.currentTime < start) this.audio.currentTime = start;
+  }
+
   async pump() {
     if (!this.header) return;
     if (!this.initialized) {
@@ -182,8 +188,9 @@ export class StreamingPlayer {
       this.audio.currentTime = Math.min(this.position, Math.max(0, this.duration - .001));
       this.primed = true;
     }
-    // MMS controls when it wants more bytes; compressed fragments remain ready.
-    if ('streaming' in this.source && !this.source.streaming) return;
+    // MMS streaming events are network scheduling hints. These fragments are
+    // already local; keep the bounded playback window available even between hints.
+    this.alignStart();
     const time = this.audio.currentTime;
     const selected = this.fragments.filter(fragment => (fragment.end ?? this.duration) > time - 30 && fragment.start < time + 60);
     if (!selected.length) return;
@@ -196,9 +203,15 @@ export class StreamingPlayer {
       const end = fragment.end ?? this.duration;
       if (!covers(this.buffer.buffered, fragment.start, end)) {
         await this.operation('appendBuffer', await this.alive(fragment.blob.arrayBuffer()));
+        if (fragment === this.fragments[0] && this.buffer.buffered.length) {
+          const start = this.buffer.buffered.start(0);
+          if (start > .25) throw new Error('The browser could not play the start of the audio stream.');
+          fragment.start = start;
+        }
         if (fragment.end === undefined && this.buffer.buffered.length) fragment.end = this.buffer.buffered.end(this.buffer.buffered.length - 1);
       }
     }
+    this.alignStart();
     this.updateDuration();
     if (!this.notified && covers(this.audio.buffered, this.audio.currentTime, Math.min(this.duration, this.audio.currentTime + .1))) {
       this.notified = true;

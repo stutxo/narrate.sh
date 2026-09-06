@@ -1,4 +1,4 @@
-import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=5";
+import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=6";
 
 const $ = (id) => document.getElementById(id);
 const text = $("text"), button = $("speak"), status = $("status"), audio = $("audio");
@@ -8,6 +8,20 @@ let worker, pending, jobId = 0, audioUrl, playbackRequest = 0, loadingAudio = fa
 let writes = Promise.resolve(), saveTimer, lastPositionSave = 0, wakeLock;
 let savedText, savedParts, savedPosition, savedRate;
 let streamConfig, streaming, playbackError, playAfterStop = false;
+let playbackWanted = false, playBlocked = false, statusMessage = status.textContent;
+
+function say(message = statusMessage) {
+  statusMessage = message;
+  status.textContent = message + (playBlocked ? " Press play to listen." : "");
+}
+function playAudio() {
+  const request = playbackRequest;
+  return audio.play().catch(() => {
+    if (request !== playbackRequest || !playbackWanted) return;
+    playBlocked = true;
+    say();
+  });
+}
 
 const result = (request) => new Promise((resolve, reject) => {
   request.onsuccess = () => resolve(request.result);
@@ -41,7 +55,7 @@ function save(blob, index, clear = false) {
 
 function report(error) {
   console.error(error);
-  status.textContent = error.message || String(error);
+  say(error.message || String(error));
 }
 function words() { return text.value.trim().split(/\s+/u).filter(Boolean).length; }
 function render() {
@@ -85,7 +99,7 @@ function audioHeader(bytes, sampleRate = 24000) {
 }
 
 // Compose saved blobs into one track without decoding or copying their PCM into JS.
-async function showAudio(startPlayback = false, keepStatus = false) {
+async function showAudio(startPlayback = false) {
   const request = ++playbackRequest, current = session, count = session.generated;
   if (!count) return;
   try {
@@ -98,7 +112,7 @@ async function showAudio(startPlayback = false, keepStatus = false) {
     const bytes = chunks.reduce((total, blob) => total + blob.size - 44, 0);
     const track = new Blob([audioHeader(bytes), ...chunks.map(blob => blob.slice(44))], { type: "audio/wav" });
     const position = (audioUrl || streaming) && !loadingAudio ? audio.currentTime : current.position;
-    const autoplay = audioUrl || streaming ? !audio.paused : startPlayback;
+    playbackWanted = audioUrl || streaming ? playbackWanted : startPlayback;
     const previousUrl = audioUrl, playbackRate = current.rate;
     loadingAudio = true;
     audio.pause();
@@ -111,7 +125,7 @@ async function showAudio(startPlayback = false, keepStatus = false) {
       audio.currentTime = Math.min(position, Number.isFinite(audio.duration) ? audio.duration : position);
       audio.playbackRate = playbackRate;
       loadingAudio = false;
-      if (autoplay) await audio.play().catch(() => { if (!keepStatus) status.textContent = "Press play to listen."; });
+      if (playbackWanted) await playAudio();
     };
     audio.src = audioUrl;
     audio.load();
@@ -128,19 +142,25 @@ function startStreaming() {
   const request = ++playbackRequest;
   audio.onloadedmetadata = null;
   const position = (audioUrl || streaming) && !loadingAudio ? audio.currentTime : session.position;
-  const autoplay = !session.generated || !audio.paused, rate = session.rate;
+  playbackWanted = !session.generated || !audio.paused;
+  const rate = session.rate;
   loadingAudio = true;
   audio.pause();
   streaming?.dispose();
   session.position = position;
   streaming = new StreamingPlayer(audio, streamConfig, {
     position,
-    onready: () => { if (request === playbackRequest) loadingAudio = false; },
+    onready: () => {
+      if (request !== playbackRequest) return;
+      loadingAudio = false;
+      // A mobile browser can interrupt the initial Play while the stream is empty.
+      if (playbackWanted && audio.paused) void playAudio();
+    },
     onerror: (error) => {
       if (request !== playbackRequest) return;
       playbackError = error;
       if (running) closeWorker();
-      else void showAudio(false, true).then(() => report(error));
+      else void showAudio().then(() => report(error));
     },
   });
   if (audioUrl) URL.revokeObjectURL(audioUrl);
@@ -148,9 +168,7 @@ function startStreaming() {
   audio.playbackRate = rate;
   $("output").hidden = false;
   // Call play in the submit gesture; it waits for the first buffered speech.
-  if (autoplay) void audio.play().catch((error) => {
-    if (request === playbackRequest && error.name === "NotAllowedError") status.textContent = "Press play to listen while speech is generated.";
-  });
+  if (playbackWanted) void playAudio();
 }
 
 function closeWorker() {
@@ -161,11 +179,11 @@ function closeWorker() {
 }
 function synthesize(value) {
   if (!worker) {
-    worker = new Worker("./speech-worker.js?v=5", { type: "module" });
+    worker = new Worker("./speech-worker.js?v=6", { type: "module" });
     worker.onmessage = ({ data }) => {
       if (!pending || data.id !== pending.id) return;
       if (data.type === "status") {
-        status.textContent = data.message === "Generating speech…" ? `Generating speech… ${Math.round(session.generated / session.parts.length * 100)}%` : data.message;
+        say(data.message === "Generating speech…" ? `Generating speech… ${Math.round(session.generated / session.parts.length * 100)}%` : data.message);
         return;
       }
       const job = pending;
@@ -217,16 +235,16 @@ async function generate() {
     }
     for (let index = session.generated; index < session.parts.length && !cancelled; index++) {
       if (playbackError) throw playbackError;
-      status.textContent = `Generating speech… ${Math.round(index / session.parts.length * 100)}%`;
+      say(`Generating speech… ${Math.round(index / session.parts.length * 100)}%`);
       const { pcm, sampleRate } = await synthesize(session.parts[index]);
       if (cancelled) break;
       const blob = new Blob([audioHeader(pcm.byteLength, sampleRate), pcm], { type: "audio/wav" });
       await save(blob, index);
       if (streaming) await streaming.append(blob);
     }
-    status.textContent = cancelled ? "Stopped. Your progress is saved." : "Ready. Your current session is saved.";
+    say(cancelled ? "Stopped. Your progress is saved." : "Ready. Your current session is saved.");
   } catch (error) {
-    if (cancelled) status.textContent = "Stopped. Your progress is saved.";
+    if (cancelled) say("Stopped. Your progress is saved.");
     else { generationError = playbackError || error; report(generationError); }
   } finally {
     closeWorker();
@@ -234,17 +252,21 @@ async function generate() {
       try { await streaming.finish(); }
       catch (error) { if (!cancelled) { playbackError = error; report(error); } }
     }
-    if (!streaming || playbackError || cancelled) {
+    // Safari's managed stream is only needed during generation. Use the saved
+    // recording afterward, just as restoring the session after a refresh does.
+    if (!streaming || playbackError || cancelled || "streaming" in streaming.source) {
       if (!audioUrl || session.generated !== generatedBefore) {
-        await showAudio(cancelled ? playAfterStop : !playbackError && !generationError, Boolean(playbackError || generationError));
+        await showAudio(cancelled ? playAfterStop : !playbackError && !generationError);
       }
     }
     if (!session.generated) {
       streaming?.dispose(); streaming = null; loadingAudio = false;
+      playbackWanted = playBlocked = false;
+      say();
       $("output").hidden = true;
     }
     running = false;
-    if (cancelled) status.textContent = "Stopped. Your progress is saved.";
+    if (cancelled) say("Stopped. Your progress is saved.");
     await wakeLock?.release().catch(() => {});
     wakeLock = null;
     render();
@@ -257,14 +279,14 @@ $("speech-form").addEventListener("submit", (event) => {
     cancelled = true;
     closeWorker();
     if (streaming) {
-      playAfterStop = !audio.paused;
+      playAfterStop = playbackWanted;
       savePosition();
       loadingAudio = true;
       ++playbackRequest;
       streaming.dispose();
       streaming = null;
     }
-    status.textContent = "Stopping…";
+    say("Stopping…");
     render();
   } else if (database && gpuReady && words() > 0) void generate();
 });
@@ -280,6 +302,7 @@ $("new-session").addEventListener("click", async () => {
   ++playbackRequest;
   audio.onloadedmetadata = null;
   audio.pause();
+  playbackWanted = playBlocked = false;
   streaming?.dispose();
   streaming = null;
   audio.removeAttribute("src");
@@ -291,7 +314,7 @@ $("new-session").addEventListener("click", async () => {
   text.value = "";
   $("output").hidden = true;
   render();
-  try { await save(null, null, true); status.textContent = gpuReady ? "Ready for text." : "WebGPU is required to generate speech."; }
+  try { await save(null, null, true); say(gpuReady ? "Ready for text." : "WebGPU is required to generate speech."); }
   catch (error) { report(error); }
   text.focus();
 });
@@ -304,10 +327,17 @@ function savePosition() {
 audio.addEventListener("timeupdate", () => {
   if (Date.now() - lastPositionSave > 5000) { lastPositionSave = Date.now(); savePosition(); }
 });
-audio.addEventListener("pause", savePosition);
+audio.addEventListener("play", () => { playbackWanted = true; playBlocked = false; say(); });
+audio.addEventListener("pause", () => {
+  // Source replacement calls load(), which cancels its queued media events.
+  // A delivered Pause belongs to playback and must cancel automatic retries.
+  playbackWanted = playBlocked = false;
+  say();
+  savePosition();
+});
 audio.addEventListener("seeked", savePosition);
 audio.addEventListener("ratechange", savePosition);
-audio.addEventListener("error", () => { loadingAudio = false; status.textContent = "The saved audio could not play."; render(); });
+audio.addEventListener("error", () => { loadingAudio = false; say("The saved audio could not play."); render(); });
 document.addEventListener("visibilitychange", () => { savePosition(); void stayAwake(); });
 window.addEventListener("pagehide", savePosition);
 window.addEventListener("pageshow", (event) => { if (event.persisted) location.reload(); });
@@ -323,20 +353,20 @@ void import("https://cdn.jsdelivr.net/npm/plyr@3.8.4/+esm").then(({ default: Ply
 try {
   // One tab owns the current session; other tabs wait without changing its data.
   // The browser releases this lock when the owning page closes or reloads.
-  status.textContent = "If your session is open in another tab, close it to continue here.";
+  say("If your session is open in another tab, close it to continue here.");
   await new Promise((resolve, reject) => {
     navigator.locks.request("narrate.sh-session", () => {
       resolve();
       return new Promise(() => {});
     }).catch(reject);
   });
-  status.textContent = "Opening your session…";
+  say("Opening your session…");
   const open = indexedDB.open("narrate.sh", 6);
   open.onupgradeneeded = () => {
     for (const name of [...open.result.objectStoreNames]) open.result.deleteObjectStore(name);
     open.result.createObjectStore("current");
   };
-  open.onblocked = () => { status.textContent = "Close other narrate.sh tabs to open your saved session."; };
+  open.onblocked = () => { say("Close other narrate.sh tabs to open your saved session."); };
   database = await result(open);
   database.onversionchange = () => database.close();
   const store = database.transaction("current").objectStore("current");
@@ -344,14 +374,14 @@ try {
   session = { ...freshSession(), ...saved, ...input };
   text.value = session.text;
   await save();
-  status.textContent = "Checking WebGPU…";
+  say("Checking WebGPU…");
   const [adapter, config] = await Promise.all([
     navigator.gpu?.requestAdapter({ powerPreference: "high-performance" }).catch(() => null),
     getStreamConfig().catch(() => null),
   ]);
   streamConfig = config;
   gpuReady = Boolean(adapter);
-  status.textContent = gpuReady ? "Ready. Your current session is saved automatically." : "WebGPU is unavailable. Use Safari 26+ or another WebGPU-capable browser.";
+  say(gpuReady ? "Ready. Your current session is saved automatically." : "WebGPU is unavailable. Use Safari 26+ or another WebGPU-capable browser.");
   if (session.generated) await showAudio();
 } catch (error) { report(error); }
 render();
