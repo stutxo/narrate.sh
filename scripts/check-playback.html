@@ -13,16 +13,21 @@
 <p class="note">Uses generated tones and the real native encoder/player. No model download, microphone, or npm installation. Test Safari 26 on a physical iPhone for its AAC and ManagedMediaSource path.</p>
 <p id="support">Checking native streaming support…</p>
 <button disabled data-test="stream">Streaming, pause, seeking, final audio</button>
+<button disabled data-test="buffering">Run out of audio, then resume</button>
+<button disabled data-test="short">Short clips and final codec frames</button>
+<button disabled data-test="long">Hour-long buffer and seeking</button>
 <button disabled data-test="position">Saved playback position</button>
 <button disabled data-test="cancel">Cancel pending work</button>
+<button disabled data-test="failure">Decoder failure and fresh playback</button>
 <audio controls></audio>
 <pre id="result" aria-live="polite"></pre>
 <script type="module">
-import { getStreamConfig, StreamingPlayer } from '../streaming-player.js?v=4';
+import { getStreamConfig, StreamingPlayer } from '../streaming-player.js?v=5';
 const audio = document.querySelector('audio'), result = document.querySelector('#result');
 const buttons = [...document.querySelectorAll('button')];
 const config = await getStreamConfig();
 let player;
+window.addEventListener('unhandledrejection', event => log(`UNHANDLED: ${event.reason?.message || event.reason}`));
 document.querySelector('#support').textContent = config
   ? `${config.codec.toUpperCase()} · ${config.Source.name}` : 'This browser has no supported native streaming encoder/player.';
 buttons.forEach(button => { button.disabled = !config; });
@@ -55,12 +60,17 @@ function wav(seconds) {
 for (const button of buttons) button.addEventListener('click', async () => {
   player?.dispose();
   result.textContent = '';
+  result.dataset.state = 'running';
+  result.dataset.test = button.dataset.test;
   buttons.forEach(button => { button.disabled = true; });
   let ready = 0, errors = 0;
+  const play = () => { void audio.play().catch(error => {
+    if (error.name !== 'AbortError') { errors++; log(`Playback: ${error.message}`); }
+  }); };
   const position = button.dataset.test === 'position' ? 5 : 0;
   player = new StreamingPlayer(audio, config, { position, onready: () => ready++, onerror: error => { errors++; log(error.message); } });
   // Keep this call synchronous with the click; Safari must grant playback here.
-  if (button.dataset.test !== 'cancel') void audio.play().catch(error => log(`Playback: ${error.message}`));
+  if (button.dataset.test !== 'cancel') play();
   try {
     if (button.dataset.test === 'cancel') {
       const pending = [player.ready, player.append(wav(2)), player.finish()];
@@ -69,6 +79,76 @@ for (const button of buttons) button.addEventListener('click', async () => {
       assert(settled.every(value => value.status === 'rejected' && value.reason.name === 'AbortError'), 'Pending work did not abort promptly.');
       assert(!ready && !errors, 'Disposed player delivered a late callback.');
       log('PASS: pending setup, append, and finish abort without late callbacks.');
+    } else if (button.dataset.test === 'short') {
+      // These lengths straddle the muxer's fragment boundaries. A coverage
+      // tolerance must not discard the last packet just because it is short.
+      for (const seconds of [.1, .501, 1.001, 2.025]) {
+        if (player.duration) {
+          player.dispose();
+          player = new StreamingPlayer(audio, config, { onerror: error => { errors++; log(error.message); } });
+          play();
+        }
+        await player.append(wav(seconds));
+        await player.finish();
+        await waitFor(() => player.source.readyState === 'ended', 'short clip reaches end of stream');
+        assert(audio.duration + 1 / 24000 >= seconds, `Final audio was lost: ${seconds}s became ${audio.duration}s.`);
+        assert(!errors, 'Short-clip streaming failed.');
+        log(`PASS: ${seconds.toFixed(3)}s input retained through its final codec frame (${audio.duration.toFixed(3)}s encoded).`);
+      }
+      await waitFor(() => audio.ended && audio.paused, 'natural playback completion');
+      log('PASS: native playback reaches its end and pauses.');
+    } else if (button.dataset.test === 'long') {
+      const part = wav(8), url = audio.src;
+      await player.append(part);
+      await waitFor(() => audio.currentTime > .1, 'initial audio');
+      audio.pause(); const pausedAt = audio.currentTime;
+      for (let i = 1; i < 500; i++) await player.append(part);
+      await player.finish();
+      assert(player.duration === 4000 && audio.src === url, 'The long track lost audio or replaced its source.');
+      assert(audio.paused && Math.abs(audio.currentTime - pausedAt) < .05, 'Long generation overrode the pause.');
+      assert(audio.buffered.end(audio.buffered.length - 1) < pausedAt + 62, 'The decoder retained the whole long narration.');
+      await audio.play(); audio.currentTime = 3990;
+      await waitFor(() => buffered(3990) && player.source.readyState === 'ended', 'seek to the end of the long track');
+      audio.currentTime = 1;
+      await waitFor(() => !audio.seeking && !player.work && buffered(1), 'seek back to the evicted beginning');
+      assert(!errors, 'Long streaming reported an error.');
+      log('PASS: 4,000 seconds of generated audio, bounded decoder window, preserved pause, and seeks between beginning/end.');
+    } else if (button.dataset.test === 'buffering') {
+      const url = audio.src;
+      await player.append(wav(1));
+      await waitFor(() => audio.currentTime > .1, 'first audio');
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      const stalledAt = audio.currentTime;
+      assert(!audio.paused && !audio.ended, 'Running out of buffered audio ended or paused the narration.');
+      await player.append(wav(2));
+      await waitFor(() => audio.currentTime > stalledAt + .2, 'playback resumes when more speech arrives');
+      assert(audio.src === url && ready === 1, 'Buffering replaced the source or restarted playback.');
+      audio.pause(); const pausedAt = audio.currentTime;
+      await player.append(wav(2)); await player.finish();
+      await new Promise(resolve => setTimeout(resolve, 150));
+      assert(audio.paused && Math.abs(audio.currentTime - pausedAt) < .05, 'New buffered speech overrode a manual pause.');
+      log('PASS: buffering resumes automatically and preserves a subsequent manual pause.');
+    } else if (button.dataset.test === 'failure') {
+      await player.append(wav(2));
+      await waitFor(() => ready === 1, 'initial native playback');
+      const pending = player.alive(new Promise(() => {}));
+      const original = Object.getOwnPropertyDescriptor(audio, 'error');
+      try {
+        Object.defineProperty(audio, 'error', { configurable: true, value: { message: 'Injected decoder failure' } });
+        audio.dispatchEvent(new Event('error'));
+        const [settled] = await Promise.allSettled([pending]);
+        assert(settled.status === 'rejected' && settled.reason.message === 'Injected decoder failure', 'Decoder failure left pending work unresolved.');
+        assert(errors === 1, 'Decoder failure was reported more or less than once.');
+      } finally {
+        player.dispose();
+        if (original) Object.defineProperty(audio, 'error', original); else delete audio.error;
+      }
+      player = new StreamingPlayer(audio, config, { onerror: error => { errors++; log(error.message); } });
+      play();
+      await player.append(wav(1)); await player.finish();
+      await waitFor(() => audio.currentTime > .1, 'fresh playback after decoder failure');
+      assert(errors === 1, 'Disposed decoder delivered a late error into fresh playback.');
+      log('PASS: decoder failure rejects pending work once; a fresh stream plays normally.');
     } else if (button.dataset.test === 'position') {
       await player.append(wav(2)); await player.append(wav(2));
       assert(ready === 0 && audio.currentTime < .001, 'Playback began before the saved position was available.');
@@ -94,10 +174,18 @@ for (const button of buttons) button.addEventListener('click', async () => {
       assert(audio.duration + .001 >= player.duration, 'Final partial codec frame was lost.');
       audio.currentTime = 1;
       await waitFor(() => buffered(1), 'backward seek into previously evicted audio');
+      audio.pause();
+      for (const time of [85, 10, 88, 3]) {
+        audio.currentTime = time;
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      await waitFor(() => !audio.seeking && !player.work && buffered(3), 'latest of several rapid seeks');
+      assert(audio.paused && Math.abs(audio.currentTime - 3) < .05, 'Rapid seeking changed the final position or pause state.');
       assert(!errors, 'Streaming reported an error.');
-      log(`PASS: forward/backward rebuffer seeks and full ${player.duration.toFixed(3)}s input including its final partial frame.`);
+      log(`PASS: forward/backward and rapid rebuffer seeks; full ${player.duration.toFixed(3)}s input including its final partial frame.`);
     }
-  } catch (error) { log(`FAIL: ${error.message}`); }
+    result.dataset.state = 'passed';
+  } catch (error) { result.dataset.state = 'failed'; log(`FAIL: ${error.message}`); }
   finally { player.dispose(); buttons.forEach(button => { button.disabled = !config; }); }
 });
 </script>

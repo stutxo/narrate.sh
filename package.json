@@ -1,0 +1,13 @@
+{
+  "name": "narrate-sh",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node scripts/check-worker.mjs && npm run test:app",
+    "test:app": "node --test --test-concurrency=1 scripts/app.test.mjs",
+    "test:model": "node --test scripts/model.test.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.56.1"
+  }
+}

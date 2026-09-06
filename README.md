@@ -11,12 +11,28 @@ Serve this directory over HTTPS (or localhost). No build step is required. Keep 
 
 Playback starts once the first audio is buffered and waits automatically if generation falls behind. Pausing playback does not stop generation; Stop generation keeps all completed audio available. Safari may require pressing Play if automatic playback is blocked. Browsers without the required native encoding/streaming support can still play the saved track after generation finishes or stops.
 
-Text and audio stay in the browser. The external Plyr player loads from jsDelivr. Each saved chunk is committed with its checkpoint, so Resume continues after the last completed passage. Reloading or stopping composes the saved PCM blobs into one track without decoding the entire narration into a JavaScript sample array. Resuming generation rebuilds its temporary streaming representation from the saved chunks.
+Text and audio stay in the browser. The external Plyr player loads from jsDelivr. Each saved chunk is committed with its checkpoint, so Resume continues after the last completed passage. Playback speed and position survive Stop, Resume, and reload. Reloading or stopping composes the saved PCM blobs into one track without decoding the entire narration into a JavaScript sample array. Resuming generation rebuilds its temporary streaming representation from the saved chunks.
+
+One tab owns the saved session through a Web Lock. Other tabs wait without writing to it, then open the latest saved data when the owning tab closes or navigates away. Before any audio has been saved, stopping or encountering an error leaves the text editable for another attempt.
 
 Keep the page visible while generating; a screen wake lock is requested when available. Mobile browsers can suspend background work. Playback position is saved every five seconds and on pause, seek, or leaving the page. Model caches can be unavailable or evicted, and do not make the whole website available offline.
 
 Storage format changes start a fresh session. There are no legacy session imports, model switching, or alternative worker message formats.
 
-Check Micro loading and PCM16 output with `node scripts/check-worker.mjs`. Open `scripts/check-playback.html` on the local server for native playback, seeking, saved-position, and cancellation checks without downloading a model.
+The app has no build step or runtime npm dependencies. The optional development dependencies run reproducible checks:
+
+```sh
+npm ci
+npx playwright-core install chromium
+npm test
+```
+
+Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to use an existing Chromium installation. The browser suite starts its own local server with production isolation headers. It controls speech arrival and injects failures while using real IndexedDB, Plyr, audio encoding, and MediaSource playback. It checks slow generation and buffering recovery, replay, speed/position through Stop and Resume, reloads, competing tabs, interrupted writes, GPU/worker errors, late player loading, 10,000-word completion, and bounded native buffering. The native player checks also encode over an hour of audio and exercise rapid seeking, short final frames, cancellation, and decoder failure. Plyr checks require network access to jsDelivr.
+
+The same regression suite runs on GitHub for pushes and pull requests.
+
+`npm run test:model` separately downloads the pinned Micro model and exercises the real worker and WebGPU pipeline. It can take several minutes and reports a skipped test if WebGPU or native streaming is unavailable. Set `NARRATE_SOFTWARE_WEBGPU=1` to explicitly use Chromium's software GPU for correctness checks; this is not a phone performance benchmark. `node scripts/check-worker.mjs` runs the worker protocol and PCM validation checks without browser dependencies.
+
+Open `scripts/check-playback.html` on a local server or HTTPS host for the same native player checks on a physical device. Each button provides the playback gesture needed on iPhone; no model download is required for these generated-tone checks.
 
 Validation includes actual Micro inference and playback through Chromium software WebGPU, plus a 10,000-word flow with simulated speech and real audio encoding/streaming. Physical iPhone testing of Safari's AAC/ManagedMediaSource path and sustained generation is still needed. Voice quality also depends on the dictionary/rules pronunciation frontend, which does not resolve every contextual pronunciation.

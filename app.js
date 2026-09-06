@@ -1,13 +1,13 @@
-import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=4";
+import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=5";
 
 const $ = (id) => document.getElementById(id);
 const text = $("text"), button = $("speak"), status = $("status"), audio = $("audio");
 const MAX_WORDS = 10000;
-const freshSession = () => ({ text: "", parts: [], generated: 0, position: 0 });
+const freshSession = () => ({ text: "", parts: [], generated: 0, position: 0, rate: 1 });
 let session = freshSession(), database, gpuReady = false, running = false, cancelled = false;
 let worker, pending, jobId = 0, audioUrl, playbackRequest = 0, loadingAudio = false;
 let writes = Promise.resolve(), saveTimer, lastPositionSave = 0, wakeLock;
-let savedText, savedParts, savedPosition;
+let savedText, savedParts, savedPosition, savedRate;
 let streamConfig, streaming, playbackError, playAfterStop = false;
 
 const result = (request) => new Promise((resolve, reject) => {
@@ -31,7 +31,7 @@ function save(blob, index, clear = false) {
       store.put({ ...progress, generated: blob ? index + 1 : current.generated }, "session");
       transaction.oncomplete = () => {
         if (blob) current.generated = index + 1;
-        savedText = text; savedParts = parts; savedPosition = progress.position;
+        savedText = text; savedParts = parts; savedPosition = progress.position; savedRate = progress.rate;
         resolve();
       };
       transaction.onabort = transaction.onerror = () => reject(transaction.error || new Error("Could not save this session."));
@@ -48,7 +48,7 @@ function words() { return text.value.trim().split(/\s+/u).filter(Boolean).length
 function render() {
   const count = words(), complete = session.parts.length > 0 && session.generated === session.parts.length;
   $("word-count").textContent = `${count.toLocaleString()} / 10,000 words`;
-  text.disabled = !database || running || session.parts.length > 0;
+  text.disabled = !database || running || session.generated > 0;
   button.disabled = !database || !gpuReady || cancelled && running || !running && (!count || count > MAX_WORDS || complete);
   button.textContent = running ? "Stop generation" : complete ? "Ready to play" : session.generated ? "Resume generation" : "Read aloud";
   $("new-session").disabled = !database || running || !session.text;
@@ -86,7 +86,7 @@ function audioHeader(bytes, sampleRate = 24000) {
 }
 
 // Compose saved blobs into one track without decoding or copying their PCM into JS.
-async function showAudio(startPlayback = false) {
+async function showAudio(startPlayback = false, keepStatus = false) {
   const request = ++playbackRequest, current = session, count = session.generated;
   if (!count) return;
   try {
@@ -100,7 +100,7 @@ async function showAudio(startPlayback = false) {
     const track = new Blob([audioHeader(bytes), ...chunks.map(blob => blob.slice(44))], { type: "audio/wav" });
     const position = (audioUrl || streaming) && !loadingAudio ? audio.currentTime : current.position;
     const autoplay = audioUrl || streaming ? !audio.paused : startPlayback;
-    const previousUrl = audioUrl, playbackRate = audio.playbackRate;
+    const previousUrl = audioUrl, playbackRate = current.rate;
     loadingAudio = true;
     audio.pause();
     streaming?.dispose();
@@ -112,7 +112,7 @@ async function showAudio(startPlayback = false) {
       audio.currentTime = Math.min(position, Number.isFinite(audio.duration) ? audio.duration : position);
       audio.playbackRate = playbackRate;
       loadingAudio = false;
-      if (autoplay) await audio.play().catch(() => { status.textContent = "Press play to listen."; });
+      if (autoplay) await audio.play().catch(() => { if (!keepStatus) status.textContent = "Press play to listen."; });
     };
     audio.src = audioUrl;
     audio.load();
@@ -129,7 +129,7 @@ function startStreaming() {
   const request = ++playbackRequest;
   audio.onloadedmetadata = null;
   const position = (audioUrl || streaming) && !loadingAudio ? audio.currentTime : session.position;
-  const autoplay = !session.generated || !audio.paused, rate = audio.playbackRate;
+  const autoplay = !session.generated || !audio.paused, rate = session.rate;
   loadingAudio = true;
   audio.pause();
   streaming?.dispose();
@@ -141,7 +141,7 @@ function startStreaming() {
       if (request !== playbackRequest) return;
       playbackError = error;
       if (running) closeWorker();
-      else void showAudio().then(() => report(error));
+      else void showAudio(false, true).then(() => report(error));
     },
   });
   if (audioUrl) URL.revokeObjectURL(audioUrl);
@@ -162,7 +162,7 @@ function closeWorker() {
 }
 function synthesize(value) {
   if (!worker) {
-    worker = new Worker("./speech-worker.js?v=4", { type: "module" });
+    worker = new Worker("./speech-worker.js?v=5", { type: "module" });
     worker.onmessage = ({ data }) => {
       if (!pending || data.id !== pending.id) return;
       if (data.type === "status") {
@@ -198,6 +198,7 @@ async function stayAwake() {
 }
 async function generate() {
   const generatedBefore = session.generated;
+  let generationError;
   clearTimeout(saveTimer);
   running = true;
   cancelled = false;
@@ -227,21 +228,24 @@ async function generate() {
     status.textContent = cancelled ? "Stopped. Your progress is saved." : "Ready. Your current session is saved.";
   } catch (error) {
     if (cancelled) status.textContent = "Stopped. Your progress is saved.";
-    else report(playbackError || error);
+    else { generationError = playbackError || error; report(generationError); }
   } finally {
     closeWorker();
     if (streaming && session.generated && !playbackError && !cancelled) {
       try { await streaming.finish(); }
-      catch (error) { playbackError = error; report(error); }
+      catch (error) { if (!cancelled) { playbackError = error; report(error); } }
     }
     if (!streaming || playbackError || cancelled) {
-      if (!audioUrl || session.generated !== generatedBefore) await showAudio(cancelled ? playAfterStop : !playbackError);
+      if (!audioUrl || session.generated !== generatedBefore) {
+        await showAudio(cancelled ? playAfterStop : !playbackError && !generationError, Boolean(playbackError || generationError));
+      }
     }
     if (!session.generated) {
       streaming?.dispose(); streaming = null; loadingAudio = false;
       $("output").hidden = true;
     }
     running = false;
+    if (cancelled) status.textContent = "Stopped. Your progress is saved.";
     await wakeLock?.release().catch(() => {});
     wakeLock = null;
     render();
@@ -267,6 +271,7 @@ $("speech-form").addEventListener("submit", (event) => {
 });
 text.addEventListener("input", () => {
   session.text = text.value;
+  session.parts = [];
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => { if (database) void save().catch(report); }, 300);
   render();
@@ -293,8 +298,8 @@ $("new-session").addEventListener("click", async () => {
 });
 function savePosition() {
   if (!database) return;
-  if ((audioUrl || streaming) && !loadingAudio) session.position = audio.currentTime;
-  if (session.position === savedPosition && session.text === savedText && session.parts === savedParts) return;
+  if ((audioUrl || streaming) && !loadingAudio) { session.position = audio.currentTime; session.rate = audio.playbackRate; }
+  if (session.position === savedPosition && session.rate === savedRate && session.text === savedText && session.parts === savedParts) return;
   void save().catch(report);
 }
 audio.addEventListener("timeupdate", () => {
@@ -302,16 +307,31 @@ audio.addEventListener("timeupdate", () => {
 });
 audio.addEventListener("pause", savePosition);
 audio.addEventListener("seeked", savePosition);
+audio.addEventListener("ratechange", savePosition);
 audio.addEventListener("error", () => { loadingAudio = false; status.textContent = "The saved audio could not play."; render(); });
 document.addEventListener("visibilitychange", () => { savePosition(); void stayAwake(); });
 window.addEventListener("pagehide", savePosition);
+window.addEventListener("pageshow", (event) => { if (event.persisted) location.reload(); });
 
 // Plyr is presentation only; generation and saved playback also work if its CDN is unavailable.
 void import("https://cdn.jsdelivr.net/npm/plyr@3.8.4/+esm").then(({ default: Plyr }) => {
-  new Plyr(audio, { iconUrl: "https://cdn.jsdelivr.net/npm/plyr@3.8.4/dist/plyr.svg", controls: ["play", "progress", "current-time", "duration", "settings"], settings: ["speed"], speed: { selected: 1, options: [0.75, 1, 1.25, 1.5, 2] } });
+  const player = new Plyr(audio, { iconUrl: "https://cdn.jsdelivr.net/npm/plyr@3.8.4/dist/plyr.svg", controls: ["play", "progress", "current-time", "duration", "settings"], settings: ["speed"], storage: { enabled: false }, speed: { selected: session.rate, options: [0.75, 1, 1.25, 1.5, 2] } });
+  // Plyr retains a clone for destroy(); a MediaSource URL cannot feed two elements.
+  player.elements.original.removeAttribute("src");
+  player.elements.original.load();
 }).catch(() => {});
 
 try {
+  // One tab owns the current session; other tabs wait without changing its data.
+  // The browser releases this lock when the owning page closes or reloads.
+  status.textContent = "If your session is open in another tab, close it to continue here.";
+  await new Promise((resolve, reject) => {
+    navigator.locks.request("narrate.sh-session", () => {
+      resolve();
+      return new Promise(() => {});
+    }).catch(reject);
+  });
+  status.textContent = "Opening your session…";
   const open = indexedDB.open("narrate.sh", 6);
   open.onupgradeneeded = () => {
     for (const name of [...open.result.objectStoreNames]) open.result.deleteObjectStore(name);

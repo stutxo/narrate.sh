@@ -1,4 +1,4 @@
-import { Output, NullTarget, Mp4OutputFormat, AudioSampleSource, AudioSample, Quality } from './vendor/media/runtime.js?v=4';
+import { Output, NullTarget, Mp4OutputFormat, AudioSampleSource, AudioSample, Quality } from './vendor/media/runtime.js?v=5';
 
 export async function getStreamConfig() {
   const Source = globalThis.ManagedMediaSource || globalThis.MediaSource;
@@ -17,7 +17,8 @@ export async function getStreamConfig() {
 const stopped = () => new DOMException('Playback was stopped.', 'AbortError');
 const covers = (ranges, start, end) => {
   for (let i = 0; i < ranges.length; i++) {
-    if (ranges.start(i) <= start + .001 && ranges.end(i) >= end - .001) return true;
+    // Allow timestamp rounding, never enough tolerance to skip a PCM sample.
+    if (ranges.start(i) <= start + 1e-6 && ranges.end(i) >= end - 1e-6) return true;
   }
   return false;
 };
