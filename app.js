@@ -1,4 +1,4 @@
-import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=6";
+import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=7";
 
 const $ = (id) => document.getElementById(id);
 const text = $("text"), button = $("speak"), status = $("status"), audio = $("audio");
@@ -12,6 +12,11 @@ let playbackWanted = false, playBlocked = false, statusMessage = status.textCont
 
 function say(message = statusMessage) {
   statusMessage = message;
+  // A pending Play can show Pause before any audio exists or while it runs out.
+  // Keep model/loading/error messages intact and explain the generation wait.
+  if (running && playbackWanted && !playBlocked && audio.readyState < 3) {
+    message = message.replace(/^Generating speech…/, session.generated ? "Waiting for more speech…" : "Preparing first speech…");
+  }
   status.textContent = message + (playBlocked ? " Press play to listen." : "");
 }
 function playAudio() {
@@ -179,7 +184,7 @@ function closeWorker() {
 }
 function synthesize(value) {
   if (!worker) {
-    worker = new Worker("./speech-worker.js?v=6", { type: "module" });
+    worker = new Worker("./speech-worker.js?v=7", { type: "module" });
     worker.onmessage = ({ data }) => {
       if (!pending || data.id !== pending.id) return;
       if (data.type === "status") {
@@ -328,6 +333,8 @@ audio.addEventListener("timeupdate", () => {
   if (Date.now() - lastPositionSave > 5000) { lastPositionSave = Date.now(); savePosition(); }
 });
 audio.addEventListener("play", () => { playbackWanted = true; playBlocked = false; say(); });
+audio.addEventListener("waiting", () => say());
+audio.addEventListener("playing", () => say());
 audio.addEventListener("pause", () => {
   // Source replacement calls load(), which cancels its queued media events.
   // A delivered Pause belongs to playback and must cancel automatic retries.

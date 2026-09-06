@@ -1,4 +1,4 @@
-import { Output, NullTarget, Mp4OutputFormat, AudioSampleSource, AudioSample, Quality } from './vendor/media/runtime.js?v=6';
+import { Output, NullTarget, Mp4OutputFormat, AudioSampleSource, AudioSample, Quality } from './vendor/media/runtime.js?v=7';
 
 export async function getStreamConfig() {
   const Source = globalThis.ManagedMediaSource || globalThis.MediaSource;
