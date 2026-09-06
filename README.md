@@ -1,6 +1,6 @@
 # narrate.sh
 
-A small, static text reader: Kitten Micro on WebGPU, a Plyr audio player, and one saved session. English only, up to 10,000 words. There is no WASM inference fallback, history list, or download/export feature.
+A small, static text reader: Kitten Micro on WebGPU, a Plyr audio player, and one saved session. English only. Text is generated in short passages without a fixed word cap; longer narrations take more time and browser storage. There is no WASM inference fallback, history list, or download/export feature.
 
 Serve this directory over HTTPS (or localhost). No build step is required. Keep the JavaScript files and `vendor/` beside `index.html`; `_headers` supplies headers for hosts that support that file. HTML and JavaScript revalidate on reload. Bump the matching `v` query in the application imports when changing interfaces; model downloads keep their separate persistent cache.
 

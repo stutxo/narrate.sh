@@ -2,7 +2,6 @@ import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=5";
 
 const $ = (id) => document.getElementById(id);
 const text = $("text"), button = $("speak"), status = $("status"), audio = $("audio");
-const MAX_WORDS = 10000;
 const freshSession = () => ({ text: "", parts: [], generated: 0, position: 0, rate: 1.5 });
 let session = freshSession(), database, gpuReady = false, running = false, cancelled = false;
 let worker, pending, jobId = 0, audioUrl, playbackRequest = 0, loadingAudio = false;
@@ -47,9 +46,9 @@ function report(error) {
 function words() { return text.value.trim().split(/\s+/u).filter(Boolean).length; }
 function render() {
   const count = words(), complete = session.parts.length > 0 && session.generated === session.parts.length;
-  $("word-count").textContent = `${count.toLocaleString()} / 10,000 words`;
+  $("word-count").textContent = `${count.toLocaleString()} ${count === 1 ? "word" : "words"}`;
   text.disabled = !database || running || session.generated > 0;
-  button.disabled = !database || !gpuReady || cancelled && running || !running && (!count || count > MAX_WORDS || complete);
+  button.disabled = !database || !gpuReady || cancelled && running || !running && (!count || complete);
   button.textContent = running ? "Stop generation" : complete ? "Ready to play" : session.generated ? "Resume generation" : "Read aloud";
   $("new-session").disabled = !database || running || !session.text;
 }
@@ -267,7 +266,7 @@ $("speech-form").addEventListener("submit", (event) => {
     }
     status.textContent = "Stopping…";
     render();
-  } else if (database && gpuReady && words() > 0 && words() <= MAX_WORDS) void generate();
+  } else if (database && gpuReady && words() > 0) void generate();
 });
 text.addEventListener("input", () => {
   session.text = text.value;

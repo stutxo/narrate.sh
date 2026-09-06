@@ -261,12 +261,28 @@ test("back navigation reacquires ownership and loads the other tab's latest text
   cleanErrors(errors);
 });
 
+test("more than 10,000 words can start and retain the full text after Stop", { timeout: 20000 }, async t => {
+  const app = await openApp(environment);
+  t.after(app.close);
+  const { page, errors } = app, text = Array(10001).fill("word").join(" ");
+  await page.locator("#text").fill(text);
+  assert.equal(await page.locator("#speak").isEnabled(), true);
+  assert.equal(await page.locator("#word-count").textContent(), "10,001 words");
+  await page.locator("#speak").click(); await reply(page);
+  await waitSession(page, saved => saved.generated === 1);
+  await page.locator("#speak").click(); await waitStopped(page);
+  const saved = await session(page);
+  assert.equal(saved.text, text);
+  assert.equal(saved.parts.join(" "), text, "All pasted text remains planned for generation");
+  assert.equal(saved.generated, 1); assert.deepEqual(saved.audioKeys, [0]);
+  assert.equal(await page.locator("#speak").textContent(), "Resume generation");
+  cleanErrors(errors);
+});
+
 test("10,000 words complete with bounded native buffering and one persistent track", { timeout: 120000 }, async t => {
   const app = await openApp(environment, { delay: 1, seconds: 1 });
   t.after(app.close);
   const { page, errors } = app;
-  await page.locator("#text").fill(Array(10001).fill("word").join(" "));
-  assert.equal(await page.locator("#speak").isDisabled(), true, "The word limit is enforced before starting");
   await begin(page, Array(10000).fill("word").join(" "));
   await page.waitForFunction(() => document.querySelector("#audio").currentTime > .05);
   await page.locator("#audio").evaluate(audio => audio.pause());
