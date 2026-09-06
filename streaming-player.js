@@ -1,4 +1,4 @@
-import { Output, NullTarget, Mp4OutputFormat, AudioSampleSource, AudioSample, Quality } from './vendor/media/runtime.js?v=8';
+import { Output, NullTarget, Mp4OutputFormat, AudioSampleSource, AudioSample, Quality } from './vendor/media/runtime.js?v=9';
 
 export async function getStreamConfig() {
   const Source = globalThis.ManagedMediaSource || globalThis.MediaSource;
@@ -26,10 +26,12 @@ const covers = (ranges, start, end) => {
 // Saved PCM stays in IndexedDB. Only compressed fragments are retained here;
 // the native decoder holds approximately 30 seconds behind / 60 seconds ahead.
 export class StreamingPlayer {
-  constructor(audio, config, { position = 0, onerror = () => {}, onready = () => {} } = {}) {
+  constructor(audio, config, { position = 0, bufferSeconds = 0, onerror = () => {}, onready = () => {} } = {}) {
     this.audio = audio;
     this.config = config;
     this.position = Math.max(0, position);
+    this.bufferSeconds = bufferSeconds;
+    this.buffering = bufferSeconds > 0;
     this.onerror = onerror;
     this.onready = onready;
     this.duration = 0;
@@ -43,7 +45,21 @@ export class StreamingPlayer {
     this.ready = this.alive(this.open());
     this.ready.catch(error => this.fail(error));
     const queue = () => { void this.queue(); };
-    for (const event of ['seeking', 'timeupdate', 'play']) audio.addEventListener(event, queue, { signal: this.events.signal });
+    for (const event of ['timeupdate', 'play', 'ratechange']) audio.addEventListener(event, queue, { signal: this.events.signal });
+    audio.addEventListener('seeking', () => {
+      // Seeking is an explicit request to hear a position that is already ready.
+      this.buffering = false;
+      if (!this.primed) this.position = audio.currentTime;
+      queue();
+    }, { signal: this.events.signal });
+    audio.addEventListener('waiting', () => {
+      const last = this.fragments.at(-1);
+      // Refill only at the generated edge, not during a seek or decoder setup.
+      if (this.primed && !audio.seeking && audio.currentTime >= (last?.end ?? last?.start ?? Infinity) - .5) {
+        this.buffering = this.bufferSeconds > 0;
+      }
+      queue();
+    }, { signal: this.events.signal });
     this.source.addEventListener('startstreaming', queue, { signal: this.events.signal });
     audio.addEventListener('error', () => {
       if (audio.error) this.fail(new Error(audio.error.message || 'The browser could not play the audio stream.'));
@@ -186,6 +202,15 @@ export class StreamingPlayer {
       this.initialized = true;
     }
     this.updateDuration();
+    if (this.buffering) {
+      const last = this.fragments.at(-1);
+      const end = last?.end ?? last?.start ?? 0;
+      const time = this.primed ? this.audio.currentTime : this.position;
+      // Hold playable fragments, not generation. Submitted PCM may still be in
+      // the encoder, so use an emitted fragment boundary for the listening lead.
+      if (!this.finished && end - time < this.bufferSeconds * this.audio.playbackRate) return;
+      this.buffering = false;
+    }
     if (!this.primed) {
       if (this.duration <= this.position && !this.finished) return;
       this.audio.currentTime = Math.min(this.position, Math.max(0, this.duration - .001));

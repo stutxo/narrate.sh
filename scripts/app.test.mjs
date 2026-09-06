@@ -6,33 +6,53 @@ let environment;
 before(async () => { environment = await startBrowser(); });
 after(async () => { await environment?.close(); });
 
-test("slow speech recovers after running out of audio, and the completed track replays", { timeout: 45000 }, async t => {
-  const app = await openApp(environment);
+test("speech builds a head start, refills after starvation, and respects Pause", { timeout: 25000 }, async t => {
+  const app = await openApp(environment, { seconds: 8 });
   t.after(app.close);
   const { page, errors } = app;
-  await begin(page);
-  assert.equal(await page.locator("#status").textContent(), "Preparing first speech… 0%", "The pending Play explains why no speech is audible yet");
+  page.setDefaultTimeout(6000);
+  await begin(page, Array(6).fill(PASSAGE).join(" "));
+  assert.equal(await page.locator("#status").textContent(), "Preparing first speech… 0%");
+  await reply(page); await waitSession(page, saved => saved.generated === 1);
+  await page.waitForFunction(() => document.querySelector("#audio").duration >= 8);
+  await page.waitForTimeout(150);
+  assert((await audioState(page)).time < .01, "Eight seconds of audio is not a ten-second listening lead at 1.5×");
+  assert.match(await page.locator("#status").textContent(), /Building audio buffer… 17%/);
   await reply(page);
   await page.waitForFunction(() => document.querySelector("#audio").currentTime > .1);
-  assert.equal(await page.locator("#status").textContent(), "Generating speech… 25%", "The preparation message clears when speech starts playing");
+  assert.equal(await page.locator("#status").textContent(), "Generating speech… 33%");
   const first = await audioState(page);
-  assert((await session(page)).generated < (await session(page)).parts.length, "Playback starts before generation completes");
-  await page.waitForFunction(() => window.__speech.events.some(value => value.event === "waiting" && value.time > .5));
-  const waiting = await audioState(page);
-  assert.equal(await page.locator("#status").textContent(), "Waiting for more speech… 25%", "A stalled timer explains that playback caught up with generation");
+  assert.equal(first.rate, 1.5);
+  assert.equal((await session(page)).generated, 2, "Playback starts while four passages still await generation");
+  const starve = async () => {
+    const target = await page.locator("#audio").evaluate(audio => {
+      audio.currentTime = audio.buffered.end(audio.buffered.length - 1) - 2;
+      return audio.currentTime;
+    });
+    await page.waitForFunction(time => document.querySelector("#audio").currentTime > time + .1, target);
+    await page.waitForFunction(() => document.querySelector("#audio").readyState < 3 && !document.querySelector("#audio").seeking);
+    return audioState(page);
+  };
+  const waiting = await starve();
+  await page.waitForFunction(() => document.querySelector("#status").textContent === "Building audio buffer… 33%");
+  await reply(page); await waitSession(page, saved => saved.generated === 3);
+  await page.waitForFunction(() => document.querySelector("#audio").duration >= 24);
+  await page.waitForTimeout(150);
+  assert(Math.abs((await audioState(page)).time - waiting.time) < .1, "A small refill must not produce another short burst of playback");
+  assert.match(await page.locator("#status").textContent(), /Building audio buffer… 50%/);
   await reply(page);
-  await page.waitForFunction(time => document.querySelector("#audio").currentTime > time + .15, waiting.time, { timeout: 6000 });
-  assert.equal(await page.locator("#status").textContent(), "Generating speech… 50%", "The waiting message clears when new speech resumes playback");
-  assert.equal((await audioState(page)).src, first.src, "Appending speech keeps the same continuous track");
-  await page.locator("#audio").evaluate(audio => audio.pause());
-  await reply(page);
+  await page.waitForFunction(time => document.querySelector("#audio").currentTime > time + .15, waiting.time);
+  assert.equal(await page.locator("#status").textContent(), "Generating speech… 67%");
+  assert.equal((await audioState(page)).src, first.src, "Refilling preserves the continuous native track");
+  await starve();
+  await page.locator('button[data-plyr="play"]').first().click();
+  await page.waitForFunction(() => document.querySelector("#audio").paused);
   const paused = await audioState(page);
-  await reply(page);
-  await waitStopped(page);
-  assert.equal((await audioState(page)).paused, true, "Buffer recovery respects an explicit pause");
+  await reply(page); await reply(page); await waitStopped(page);
+  assert.equal((await audioState(page)).paused, true, "Completion and buffer recovery cannot override a user pause");
   assert(Math.abs((await audioState(page)).time - paused.time) < .1);
-  await page.locator("#audio").evaluate(async audio => { audio.currentTime = 0; audio.playbackRate = 2; await audio.play(); });
-  await page.waitForFunction(() => document.querySelector("#audio").ended, undefined, { timeout: 8000 });
+  await page.locator("#audio").evaluate(async audio => { audio.currentTime = audio.duration - .4; audio.playbackRate = 2; await audio.play(); });
+  await page.waitForFunction(() => document.querySelector("#audio").ended);
   await page.locator("#audio").evaluate(audio => { audio.currentTime = 0; return audio.play(); });
   await page.waitForFunction(() => document.querySelector("#audio").currentTime > .15 && !document.querySelector("#audio").paused);
   assert.equal(await page.locator(".plyr").count(), 1);
@@ -40,8 +60,113 @@ test("slow speech recovers after running out of audio, and the completed track r
   cleanErrors(errors);
 });
 
+test("the playback head start follows listening speed, not just stored audio duration", { timeout: 15000 }, async t => {
+  const app = await openApp(environment, { seconds: 12 });
+  t.after(app.close);
+  const { page, errors } = app;
+  await begin(page, Array(3).fill(PASSAGE).join(" "));
+  await reply(page); await waitSession(page, saved => saved.generated === 1);
+  await page.waitForFunction(() => document.querySelector("#audio").duration >= 12);
+  await page.waitForTimeout(150);
+  assert((await audioState(page)).time < .01, "Twelve stored seconds is still less than ten listening seconds at 1.5×");
+  await page.locator("#audio").evaluate(audio => { audio.playbackRate = 1.25; });
+  await page.waitForTimeout(100);
+  assert((await audioState(page)).time < .01);
+  await page.locator("#speak").click(); await waitStopped(page);
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+  assert.equal((await audioState(page)).rate, 1.25, "Stop preserves a speed selected while the initial audio buffer was held");
+  await page.locator("#new-session").click();
+  await waitSession(page, saved => saved.text === "" && saved.audioKeys.length === 0);
+  await begin(page, Array(3).fill(PASSAGE).join(" "));
+  await reply(page); await waitSession(page, saved => saved.generated === 1);
+  await page.waitForFunction(() => document.querySelector("#audio").duration >= 12);
+  assert.equal((await audioState(page)).rate, 1.5);
+  await page.locator("#audio").evaluate(audio => { audio.playbackRate = 1; });
+  await page.waitForFunction(() => document.querySelector("#audio").currentTime > .1);
+  assert.equal((await session(page)).generated, 1, "Slowing playback releases the available lead without another generated passage");
+  assert.equal((await audioState(page)).rate, 1);
+  await page.locator("#audio").evaluate(audio => { audio.playbackRate = 1.5; });
+  await page.locator("#speak").click(); await waitStopped(page);
+  assert.equal((await audioState(page)).rate, 1.5);
+  cleanErrors(errors);
+});
+
+test("short speech and Stop release the head start, and paused Resume keeps 1.5×", { timeout: 20000 }, async t => {
+  const app = await openApp(environment, { seconds: 1.2 });
+  t.after(app.close);
+  const { page, errors } = app;
+  await begin(page, PASSAGE);
+  await page.locator("#audio").evaluate(audio => { audio.playbackRate = 1.25; });
+  await reply(page); await waitStopped(page);
+  await page.waitForFunction(() => document.querySelector("#audio").currentTime > .1);
+  assert.equal((await audioState(page)).rate, 1.25, "Short completion preserves a speed chosen before any speech was buffered");
+  await page.locator("#new-session").click();
+  await waitSession(page, saved => saved.text === "" && saved.audioKeys.length === 0);
+  await begin(page, [PASSAGE, PASSAGE].join(" "));
+  await reply(page); await waitSession(page, saved => saved.generated === 1);
+  await page.waitForFunction(() => document.querySelector("#audio").duration >= 1.2);
+  assert((await audioState(page)).time < .01);
+  await page.locator("#speak").click(); await waitStopped(page);
+  await page.waitForFunction(() => document.querySelector("#audio").currentTime > .1);
+  assert.equal((await audioState(page)).duration, 1.2, "Stop immediately makes the saved partial track playable");
+  await page.locator("#audio").evaluate(audio => audio.pause());
+  const stopped = await audioState(page);
+  await waitSession(page, saved => Math.abs(saved.position - stopped.time) < .05);
+  await page.locator("#speak").click(); await reply(page); await waitStopped(page);
+  const resumed = await audioState(page);
+  assert.equal(resumed.paused, true);
+  assert.equal(resumed.rate, 1.5);
+  assert(Math.abs(resumed.time - stopped.time) < .05);
+  assert(resumed.duration >= 2.4 && resumed.duration < 2.5, "The native codec retains the complete resumed track, including final frame padding");
+  assert.equal((await session(page)).generated, 2);
+  cleanErrors(errors);
+});
+
+test("seeking into generated speech bypasses an initial head-start wait", { timeout: 15000 }, async t => {
+  const app = await openApp(environment, { seconds: 4 });
+  t.after(app.close);
+  const { page, errors } = app;
+  await begin(page, [PASSAGE, PASSAGE].join(" "));
+  await reply(page); await waitSession(page, saved => saved.generated === 1);
+  await page.waitForFunction(() => document.querySelector("#audio").duration >= 4);
+  assert((await audioState(page)).time < .01);
+  await page.locator("#audio").evaluate(audio => { audio.currentTime = 1; });
+  await page.waitForFunction(() => document.querySelector("#audio").currentTime > 1.1);
+  assert.equal((await session(page)).generated, 1, "An explicit seek can play saved audio while more speech is still being generated");
+  assert.equal((await audioState(page)).rate, 1.5);
+  await page.locator("#speak").click(); await waitStopped(page);
+  cleanErrors(errors);
+});
+
+test("one next inference overlaps PCM processing and Stop discards uncommitted lookahead", { timeout: 20000 }, async t => {
+  const app = await openApp(environment);
+  t.after(async () => { await app.page.evaluate(() => window.__speech.releaseRead?.()); await app.close(); });
+  const { page, errors } = app;
+  await page.evaluate(() => { window.__speech.holdPCMReads = true; });
+  await begin(page); await reply(page);
+  await page.waitForFunction(() => window.__speech.readBlocked);
+  assert.equal(await page.evaluate(() => window.__speech.requests.length), 2, "The next inference starts while the current PCM is still being processed");
+  assert.equal(await page.evaluate(() => window.__speech.pending.length), 1);
+  await reply(page);
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(() => window.__speech.requests.length), 2, "A blocked append cannot start an unbounded queue of inference results");
+  assert.deepEqual((await session(page)).audioKeys, [0]);
+  await page.locator("#speak").click(); await waitStopped(page);
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+  const stopped = await audioState(page);
+  assert.equal(stopped.duration, 1.2);
+  assert.equal((await session(page)).generated, 1, "Only committed speech survives Stop");
+  assert.equal(await page.evaluate(() => window.__speech.pending.length), 0);
+  assert.equal(await page.evaluate(() => window.__speech.terminated), 1);
+  await page.evaluate(() => { window.__speech.holdPCMReads = false; window.__speech.releaseRead(); });
+  await page.waitForTimeout(100);
+  assert.equal((await audioState(page)).src, stopped.src);
+  assert.deepEqual((await session(page)).audioKeys, [0], "Late processing cannot save the discarded next result");
+  cleanErrors(errors);
+});
+
 test("interrupted initial Play recovers when speech is ready without a refresh", { timeout: 20000 }, async t => {
-  const app = await openApp(environment, { initialPlayError: "AbortError" });
+  const app = await openApp(environment, { initialPlayError: "AbortError", seconds: 20 });
   t.after(app.close);
   const { page, errors } = app;
   await begin(page, [PASSAGE, PASSAGE].join(" ")); await reply(page);
@@ -78,7 +203,7 @@ test("pausing before the first speech arrives prevents an automatic playback ret
   await page.waitForFunction(() => document.querySelector("#audio").paused);
   await page.waitForFunction(() => document.querySelector("#status").textContent === "Generating speech… 0%");
   await reply(page);
-  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 1);
   assert.equal(await page.locator("#status").textContent(), "Generating speech… 50%", "Paused playback does not claim to be waiting for more speech");
   assert.equal((await audioState(page)).paused, true);
   assert((await audioState(page)).time < .01, "Buffered speech does not override a user's pause");
@@ -91,7 +216,7 @@ test("pausing before the first speech arrives prevents an automatic playback ret
 });
 
 test("completed managed streaming becomes playable saved audio without losing playback preferences", { timeout: 20000 }, async t => {
-  const app = await openApp(environment, { managedMedia: true, seconds: 3 });
+  const app = await openApp(environment, { managedMedia: true, seconds: 20 });
   t.after(app.close);
   const { page, errors } = app;
   await begin(page, [PASSAGE, PASSAGE].join(" ")); await reply(page);
@@ -104,7 +229,7 @@ test("completed managed streaming becomes playable saved audio without losing pl
   await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
   const completed = await audioState(page);
   assert.notEqual(completed.src, streamingSource, "The completed managed stream is replaced with saved audio");
-  assert.equal(completed.duration, 6); assert.equal(completed.rate, 1.25); assert.equal(completed.paused, true);
+  assert.equal(completed.duration, 40); assert.equal(completed.rate, 1.25); assert.equal(completed.paused, true);
   assert(Math.abs(completed.time - .6) < .05);
   assert.equal(await page.evaluate(() => window.__speech.liveUrls.size), 1, "The managed source is released after handoff");
   assert.deepEqual((await session(page)).audioKeys, [0, 1]);
@@ -114,7 +239,7 @@ test("completed managed streaming becomes playable saved audio without losing pl
 });
 
 test("active managed playback continues through completion and still honors Pause", { timeout: 20000 }, async t => {
-  const app = await openApp(environment, { managedMedia: true, seconds: 3 });
+  const app = await openApp(environment, { managedMedia: true, seconds: 20 });
   t.after(app.close);
   const { page, errors } = app;
   await begin(page, [PASSAGE, PASSAGE].join(" ")); await reply(page);
@@ -124,7 +249,7 @@ test("active managed playback continues through completion and still honors Paus
   await page.waitForFunction(time => document.querySelector("#audio").currentTime > time + .15, streaming.time);
   const completed = await audioState(page);
   assert.notEqual(completed.src, streaming.src);
-  assert.equal(completed.duration, 6); assert.equal(completed.paused, false); assert.equal(completed.rate, 1.5);
+  assert.equal(completed.duration, 40); assert.equal(completed.paused, false); assert.equal(completed.rate, 1.5);
   await page.locator('button[data-plyr="play"]').first().click();
   await page.waitForFunction(() => document.querySelector("#audio").paused);
   const paused = await audioState(page);
@@ -140,7 +265,7 @@ test("active managed playback continues through completion and still honors Paus
   await page.locator('button[data-plyr="play"]').first().click();
   await page.waitForFunction(() => document.querySelector("#audio").paused);
   await reply(page);
-  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 1);
   await page.waitForTimeout(100);
   assert.equal((await audioState(page)).paused, true, "An old source change cannot swallow a new session's Pause");
   assert((await audioState(page)).time < .01);
@@ -150,7 +275,7 @@ test("active managed playback continues through completion and still honors Paus
 });
 
 test("late external player initialization preserves ongoing playback", { timeout: 25000 }, async t => {
-  const app = await openApp(environment, { delayPlyr: true, seconds: 4 });
+  const app = await openApp(environment, { delayPlyr: true, seconds: 20 });
   t.after(() => { app.releasePlyr(); return app.close(); });
   const { page, errors } = app;
   await begin(page);
@@ -177,7 +302,7 @@ test("pause, seek, stop, reload and resume preserve one saved narration", { time
   await begin(page);
   await reply(page); await reply(page);
   await waitSession(page, saved => saved.generated === 2);
-  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 1);
   await page.locator("#audio").evaluate(audio => { audio.pause(); audio.playbackRate = 1.5; });
   await page.locator("#speak").click();
   await waitStopped(page);
@@ -484,7 +609,7 @@ test("Stop during saved audio preload preserves the whole track, position and sp
 });
 
 test("native decoder failure restores committed audio and generation can resume", { timeout: 20000 }, async t => {
-  const app = await openApp(environment);
+  const app = await openApp(environment, { seconds: 20 });
   t.after(app.close);
   const { page, errors } = app;
   await begin(page); await reply(page); await reply(page);
@@ -501,10 +626,10 @@ test("native decoder failure restores committed audio and generation can resume"
   const recovered = await audioState(page), saved = await session(page);
   assert.match(await page.locator("#status").textContent(), /Injected native decoder failure/);
   assert.equal(saved.generated, 2); assert.deepEqual(saved.audioKeys, [0, 1]);
-  assert.equal(recovered.duration, 2.4);
+  assert.equal(recovered.duration, 40);
   assert.notEqual(recovered.src, playing.src, "A playable WAV replaces the failed MediaSource");
   assert(recovered.time >= playing.time - .1, "Recovery keeps the current place");
-  assert.deepEqual(await page.evaluate(() => [...window.__speech.liveUrls.values()]), [115244]);
+  assert.deepEqual(await page.evaluate(() => [...window.__speech.liveUrls.values()]), [40 * 48000 + 44]);
   await page.locator("#audio").evaluate(audio => audio.pause());
   await page.locator("#speak").click(); await reply(page); await reply(page); await waitStopped(page);
   assert.equal((await session(page)).generated, 4);

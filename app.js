@@ -1,4 +1,4 @@
-import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=8";
+import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=9";
 
 const $ = (id) => document.getElementById(id);
 const text = $("text"), button = $("speak"), status = $("status"), audio = $("audio");
@@ -15,7 +15,8 @@ function say(message = statusMessage) {
   // A pending Play can show Pause before any audio exists or while it runs out.
   // Keep model/loading/error messages intact and explain the generation wait.
   if (running && playbackWanted && !playBlocked && audio.readyState < 3) {
-    message = message.replace(/^Generating speech…/, session.generated ? "Waiting for more speech…" : "Preparing first speech…");
+    message = message.replace(/^Generating speech…/, !session.generated ? "Preparing first speech…"
+      : streaming?.buffering ? "Building audio buffer…" : "Waiting for more speech…");
   }
   status.textContent = message + (playBlocked ? " Press play to listen." : "");
 }
@@ -154,7 +155,7 @@ function startStreaming() {
   streaming?.dispose();
   session.position = position;
   streaming = new StreamingPlayer(audio, streamConfig, {
-    position,
+    position, bufferSeconds: 10,
     onready: () => {
       if (request !== playbackRequest) return;
       loadingAudio = false;
@@ -184,7 +185,7 @@ function closeWorker() {
 }
 function synthesize(value) {
   if (!worker) {
-    worker = new Worker("./speech-worker.js?v=8", { type: "module" });
+    worker = new Worker("./speech-worker.js?v=9", { type: "module" });
     worker.onmessage = ({ data }) => {
       if (!pending || data.id !== pending.id) return;
       if (data.type === "status") {
@@ -238,11 +239,16 @@ async function generate() {
     if (streaming) {
       for (let index = 0; index < generatedBefore && !cancelled; index++) await streaming.append(await read(index));
     }
+    let next;
     for (let index = session.generated; index < session.parts.length && !cancelled; index++) {
       if (playbackError) throw playbackError;
       say(`Generating speech… ${Math.round(index / session.parts.length * 100)}%`);
-      const { pcm, sampleRate } = await synthesize(session.parts[index]);
+      const { pcm, sampleRate } = await (next || synthesize(session.parts[index]));
       if (cancelled) break;
+      // Keep one inference ahead while the current audio is saved and encoded.
+      // Stop/storage errors may abandon this promise, so handle rejection now.
+      next = index + 1 < session.parts.length ? synthesize(session.parts[index + 1]) : null;
+      next?.catch(() => {});
       const blob = new Blob([audioHeader(pcm.byteLength, sampleRate), pcm], { type: "audio/wav" });
       await save(blob, index);
       if (streaming) await streaming.append(blob);
@@ -333,7 +339,7 @@ audio.addEventListener("timeupdate", () => {
   if (Date.now() - lastPositionSave > 5000) { lastPositionSave = Date.now(); savePosition(); }
 });
 audio.addEventListener("play", () => { playbackWanted = true; playBlocked = false; say(); });
-audio.addEventListener("waiting", () => say());
+audio.addEventListener("waiting", () => setTimeout(() => say(), 0));
 audio.addEventListener("playing", () => say());
 audio.addEventListener("pause", () => {
   // Source replacement calls load(), which cancels its queued media events.
@@ -343,7 +349,10 @@ audio.addEventListener("pause", () => {
   savePosition();
 });
 audio.addEventListener("seeked", savePosition);
-audio.addEventListener("ratechange", savePosition);
+audio.addEventListener("ratechange", () => {
+  if (streaming) session.rate = audio.playbackRate;
+  savePosition();
+});
 audio.addEventListener("error", () => { loadingAudio = false; say("The saved audio could not play."); render(); });
 document.addEventListener("visibilitychange", () => { savePosition(); void stayAwake(); });
 window.addEventListener("pagehide", savePosition);

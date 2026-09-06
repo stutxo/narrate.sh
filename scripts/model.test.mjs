@@ -13,7 +13,7 @@ test('real Micro speech plays before generation finishes and saves valid PCM', {
   const page = await context.newPage(), errors = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
-  await page.exposeFunction('modelDiagnostic', message => t.diagnostic(message));
+  await page.exposeFunction('modelDiagnostic', message => console.log(message));
   await page.addInitScript(() => {
     const trace = window.__modelTest = { requests: [], chunks: [], errors: [], firstPlayback: null };
     const NativeWorker = window.Worker;
@@ -38,11 +38,14 @@ test('real Micro speech plays before generation finishes and saves valid PCM', {
           const chunk = { id: data.id, bytes: view.byteLength, seconds: view.byteLength / 48000,
             rms: Math.sqrt(squared / (view.byteLength / 2)) };
           trace.chunks.push(chunk);
-          window.modelDiagnostic(`Real GPU chunk ${data.id}: ${chunk.seconds.toFixed(3)} seconds of speech.`);
+          window.modelDiagnostic(`Real GPU chunk ${data.id}: ${chunk.seconds.toFixed(3)} seconds of speech at ${((performance.now() - trace.started) / 1000).toFixed(2)}s.`);
         });
       }
       postMessage(message, ...args) {
-        if (message.type === 'generate') trace.requests.push({ id: message.id, text: message.text });
+        if (message.type === 'generate') {
+          trace.started ??= performance.now();
+          trace.requests.push({ id: message.id, text: message.text });
+        }
         return super.postMessage(message, ...args);
       }
     };
@@ -53,7 +56,7 @@ test('real Micro speech plays before generation finishes and saves valid PCM', {
         if (audio.currentTime > .01) {
           trace.firstPlayback = { time: audio.currentTime, generated: trace.chunks.length,
             running: document.querySelector('#speak').textContent === 'Stop generation', src: audio.src };
-          window.modelDiagnostic(`Native playback began after ${trace.chunks.length} generated chunk(s).`);
+          window.modelDiagnostic(`Native playback began after ${trace.chunks.length} generated chunk(s), at ${((performance.now() - trace.started) / 1000).toFixed(2)}s.`);
         } else if (!audio.paused) requestAnimationFrame(observe);
       };
       audio.addEventListener('playing', observe);
@@ -65,16 +68,20 @@ test('real Micro speech plays before generation finishes and saves valid PCM', {
     const version = new URL(document.querySelector('script[type="module"]').src).search;
     const { getStreamConfig } = await import(new URL(`streaming-player.js${version}`, location.href).href);
     const adapter = await navigator.gpu?.requestAdapter();
-    return { gpu: Boolean(adapter), codec: (await getStreamConfig())?.codec };
+    return { gpu: Boolean(adapter), codec: (await getStreamConfig())?.codec, isolated: crossOriginIsolated };
   });
   if (!support.gpu || !support.codec) {
     t.skip(`WebGPU/native streaming unavailable (${JSON.stringify(support)}). Configure a supported Chromium; software GPU requires NARRATE_SOFTWARE_WEBGPU=1.`);
     return;
   }
   t.diagnostic(`Using ${software ? 'explicit software WebGPU (not a phone benchmark)' : 'the browser WebGPU adapter'} and native ${support.codec}.`);
+  if (process.env.NARRATE_TEST_ISOLATION === '0') assert.equal(support.isolated, false);
+  // Leave enough speech after the startup buffer to prove playback overlaps inference.
+  const passage = 'Extraordinary possibilities emerge when technology becomes accessible, allowing thoughtful experimentation with beautifully expressive narration across different environments.';
   const text = [
     'Hello world.',
-    'Extraordinary possibilities emerge when technology becomes accessible, allowing thoughtful experimentation with beautifully expressive narration across different environments.',
+    passage,
+    passage,
     'Goodbye now.',
   ].join(' ');
   await page.locator('#text').fill(text);

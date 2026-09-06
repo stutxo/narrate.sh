@@ -137,7 +137,11 @@ function installControls(options) {
   };
   for (const event of ["playing", "waiting", "ended", "pause", "seeking", "seeked"]) {
     document.addEventListener(event, target => {
-      if (target.target.id === "audio") controls.events.push({ event, time: target.target.currentTime });
+      const audio = target.target;
+      if (audio.id === "audio") controls.events.push({ event, time: audio.currentTime,
+        seeking: audio.seeking, ready: audio.readyState,
+        bufferedEnd: audio.buffered.length ? audio.buffered.end(audio.buffered.length - 1) : 0,
+      });
     }, true);
   }
 }
