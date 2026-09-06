@@ -18,9 +18,11 @@ export async function startBrowser({ args = [] } = {}) {
       const bytes = await readFile(file);
       response.writeHead(200, {
         "Content-Type": mime[extname(file)] || "application/octet-stream",
-        "Cross-Origin-Opener-Policy": "same-origin",
-        "Cross-Origin-Embedder-Policy": "require-corp",
-        "Cross-Origin-Resource-Policy": "same-origin",
+        ...(process.env.NARRATE_TEST_ISOLATION === "0" ? {} : {
+          "Cross-Origin-Opener-Policy": "same-origin",
+          "Cross-Origin-Embedder-Policy": "require-corp",
+          "Cross-Origin-Resource-Policy": "same-origin",
+        }),
       }).end(bytes);
     } catch { response.writeHead(404).end(); }
   });

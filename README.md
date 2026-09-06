@@ -2,7 +2,7 @@
 
 A small, static text reader: Kitten Micro on WebGPU, a Plyr audio player, and one saved session. English only. Text is generated in short passages without a fixed word cap; longer narrations take more time and browser storage. There is no WASM inference fallback, history list, or download/export feature.
 
-Serve this directory over HTTPS (or localhost). No build step is required. Keep the JavaScript files and `vendor/` beside `index.html`; `_headers` supplies headers for hosts that support that file. HTML and JavaScript revalidate on reload. Bump the matching `v` query in the application imports when changing interfaces; model downloads keep their separate persistent cache.
+Serve this directory over HTTPS (or localhost). No build step is required. Keep the JavaScript files and `vendor/` beside `index.html`. GitHub Pages hosts the app; no custom isolation headers or shared-memory support are required. Bump the matching `v` query in the application imports when changing interfaces; model downloads keep their separate persistent cache.
 
 - `app.js` splits text into short passages and stores each completed PCM16 audio chunk with its checkpoint in IndexedDB. It starts playback while the remaining text is generated. One native audio element and Plyr provide play/pause, speed, and a growing seekable timeline.
 - `speech-worker.js` loads the pinned Micro model and generates PCM16 speech off the main thread. Model and voice downloads total approximately 45 MB and are cached when browser storage permits.
@@ -27,11 +27,11 @@ npx playwright-core install chromium
 npm test
 ```
 
-Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to use an existing Chromium installation. The browser suite starts its own local server with production isolation headers. It controls speech arrival and injects failures while using real IndexedDB, Plyr, audio encoding, and MediaSource playback. It checks slow generation and buffering recovery, replay, speed/position through Stop and Resume, reloads, competing tabs, interrupted writes, GPU/worker errors, late player loading, 10,000-word completion, and bounded native buffering. The native player checks also encode over an hour of audio and exercise rapid seeking, short final frames, cancellation, and decoder failure. Plyr checks require network access to jsDelivr.
+Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to use an existing Chromium installation. The browser suite starts its own local server; `NARRATE_TEST_ISOLATION=0` omits isolation headers to match GitHub Pages. It controls speech arrival and injects failures while using real IndexedDB, Plyr, audio encoding, and MediaSource playback. It checks slow generation and buffering recovery, replay, speed/position through Stop and Resume, reloads, competing tabs, interrupted writes, GPU/worker errors, late player loading, 10,000-word completion, and bounded native buffering. The native player checks also encode over an hour of audio and exercise rapid seeking, short final frames, cancellation, and decoder failure. Plyr checks require network access to jsDelivr.
 
 Mobile regressions cover interrupted and denied Play requests, an explicit Pause before speech arrives, and the completed managed-stream handoff. Native boundary tests inject timestamp offsets into real SourceBuffers to check small leading gaps, backward seeks, final audio frames, and buffering when the managed streaming hint is inactive. These use Chromium's native codecs and simulated managed lifecycle flags; they do not substitute for physical Safari testing.
 
-The same regression suite runs on GitHub for pushes and pull requests.
+The same regression suite runs on GitHub for pushes and pull requests without isolation headers. Successful runs on `main` publish the static app and vendored license notices to GitHub Pages. The custom domain is configured in the repository's Pages settings. Browser sessions and model caches belong to the domain; moving from the former `narrate-sh.pages.dev` address starts a separate local session.
 
 `npm run test:model` separately downloads the pinned Micro model and exercises the real worker and WebGPU pipeline. It can take several minutes and reports a skipped test if WebGPU or native streaming is unavailable. Set `NARRATE_SOFTWARE_WEBGPU=1` to explicitly use Chromium's software GPU for correctness checks; this is not a phone performance benchmark. `node scripts/check-worker.mjs` runs the worker protocol and PCM validation checks without browser dependencies.
 
