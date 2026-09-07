@@ -48,11 +48,14 @@ test("local player stays readable and usable at 320px with enlarged text", { tim
     const layout = await page.evaluate(() => {
       const output = document.querySelector("#output").getBoundingClientRect();
       const title = document.querySelector("h1").getBoundingClientRect();
-      return { width: document.documentElement.scrollWidth, viewport: innerWidth, output: { top: output.top, bottom: output.bottom }, title: { left: title.left, right: title.right }, controls: Array.from(document.querySelectorAll('.plyr__controls button')).filter(button => button.getBoundingClientRect().width).map(button => { const rect = button.getBoundingClientRect(); return { width: rect.width, height: rect.height, left: rect.left, right: rect.right }; }) };
+      const range = document.createRange(); range.selectNodeContents(document.querySelector("h1"));
+      const titleText = range.getBoundingClientRect();
+      return { width: document.documentElement.scrollWidth, viewport: { width: innerWidth, height: innerHeight, scale: visualViewport?.scale }, scroll: { x: scrollX, y: scrollY }, output: { top: output.top, bottom: output.bottom }, title: { left: title.left, right: title.right, textRight: titleText.right }, controls: Array.from(document.querySelectorAll('.plyr__controls button')).filter(button => button.getBoundingClientRect().width).map(button => { const rect = button.getBoundingClientRect(); return { width: rect.width, height: rect.height, left: rect.left, right: rect.right }; }) };
     });
-    assert(layout.width <= layout.viewport, `No horizontal overflow at ${size}px root text`);
-    assert(layout.title.left >= 0 && layout.title.right <= 320);
-    assert(layout.output.top >= 0 && layout.output.bottom <= 640, "Sticky playback controls stay visible while reading the top of the page");
+    const measurements = `at ${size}px root text: ${JSON.stringify(layout)}`;
+    assert(layout.width <= 320, `No horizontal overflow ${measurements}`);
+    assert(layout.title.left >= 0 && layout.title.right <= 320 && layout.title.textRight <= 320, `Title text stays inside the screen ${measurements}`);
+    assert(layout.output.top >= 0 && layout.output.bottom <= 640, `Sticky playback controls stay visible while reading the top of the page ${measurements}`);
     assert(layout.controls.every(rect => rect.width >= 44 && rect.height >= 44 && rect.left >= 0 && rect.right <= 320));
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.locator('[data-plyr="settings"][aria-expanded="true"]').waitFor();
