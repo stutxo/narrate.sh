@@ -1,10 +1,10 @@
-import { auditionPlan, pcmStats, wavBytes } from './audition-utils.js?v=13';
-import { MODEL } from '../model-config.js?v=13';
+import { auditionPlan, pcmStats, wavBytes } from './audition-utils.js?v=14';
+import { MODEL } from '../model-config.js?v=14';
 
 const $ = id => document.getElementById(id);
 document.title = `${MODEL.name} audition`;
 $('title').textContent = document.title;
-$('description').textContent = `Runs locally with WebGPU. The model downloads about ${MODEL.downloadMB} MB on first use. Each candidate gets a short warmup excluded from comparisons. Repeats rotate the order; a single repeat is exploratory. Signal checks are not speech-quality scores.`;
+$('description').textContent = `Runs locally on ${MODEL.backend === 'wasm' ? 'the CPU with WebAssembly' : 'WebGPU'}. The model downloads about ${MODEL.downloadMB} MB on first use. Each candidate gets a short warmup excluded from comparisons. Repeats rotate the order; a single repeat is exploratory. Signal checks are not speech-quality scores.`;
 let worker, pending, wake, serial = 0, running = false, revealed = false;
 const artifacts = [], urls = [];
 function status(text) { $('status').textContent = text; }
@@ -72,7 +72,7 @@ async function run(options = {}) {
   urls.splice(0).forEach(url => URL.revokeObjectURL(url)); artifacts.length = 0; $('results').replaceChildren();
   const report = window.audition.report = {
     version: 1, createdAt: new Date().toISOString(), userAgent: navigator.userAgent,
-    model: { id: MODEL.id, name: MODEL.name, voice: MODEL.voice },
+    model: { id: MODEL.id, name: MODEL.name, voice: MODEL.voice, backend: MODEL.backend },
     isolated: crossOriginIsolated, backgrounded: document.visibilityState !== 'visible',
     seed: plan.seed, targetRate: plan.targetRate, repeats: plan.repeats,
     corpus: plan.corpus, warmups: [], results: [],
@@ -82,13 +82,13 @@ async function run(options = {}) {
       'Quiet edges use 10 ms RMS windows below -60 dBFS in raw audio; divide by playbackRate for listening time. All-quiet audio reports its full duration at both edges.',
       'Raw WAV files require the recorded playbackRate for matched nominal listening pace.',
       'If backgrounded is true, browser throttling may have affected these timings.',
-      'A single repeat and software GPU timings cannot establish phone performance.'],
+      'Timings apply only to this browser and device; a single repeat cannot establish phone performance.'],
   };
   wake = { active: true, report };
   holdScreen();
   try {
-    if (!navigator.gpu) throw new Error('This browser does not expose WebGPU.');
-    worker = new Worker(new URL('../speech-worker.js?v=13', import.meta.url), { type: 'module' });
+    if (MODEL.backend !== 'wasm' && !navigator.gpu) throw new Error('This model requires WebGPU.');
+    worker = new Worker(new URL('../speech-worker.js?v=14', import.meta.url), { type: 'module' });
     worker.onerror = event => pending?.reject(new Error(event.message || 'The speech worker failed.'));
     worker.onmessage = ({ data }) => {
       if (!pending || data.id !== pending.id) return;

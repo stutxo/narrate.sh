@@ -1,13 +1,11 @@
-// Optional: downloads ~45 MB and requires WebGPU plus native audio streaming.
-// Set NARRATE_SOFTWARE_WEBGPU=1 to explicitly use Chromium's software adapter.
+// Optional: downloads Pocket weights (~237 MB) and runs real CPU/WASM inference.
+// No WebGPU or cross-origin isolation is required. Not part of the ordinary CI suite.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { startBrowser, session, waitSession } from './app-fixtures.mjs';
 
-test('real Micro speech plays before generation finishes and saves valid PCM', { timeout: 720000 }, async t => {
-  const software = process.env.NARRATE_SOFTWARE_WEBGPU === '1';
-  const environment = await startBrowser({ args: software
-    ? ['--enable-unsafe-webgpu', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : [] });
+test('real Pocket CPU speech plays before generation finishes and saves valid PCM', { timeout: 720000 }, async t => {
+  const environment = await startBrowser();
   t.after(() => environment.close());
   const context = await environment.browser.newContext();
   const page = await context.newPage(), errors = [];
@@ -15,9 +13,10 @@ test('real Micro speech plays before generation finishes and saves valid PCM', {
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   await page.exposeFunction('modelDiagnostic', message => console.log(message));
   await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'gpu', { configurable: true, value: undefined });
     const trace = window.__modelTest = { requests: [], chunks: [], errors: [], firstPlayback: null };
     const NativeWorker = window.Worker;
-    // Observe real messages; preserve the worker, GPU, encoder, and playback APIs.
+    // Observe real messages; preserve the worker, CPU runtime, encoder, and playback APIs.
     window.Worker = class extends NativeWorker {
       constructor(...args) {
         super(...args);
@@ -38,7 +37,7 @@ test('real Micro speech plays before generation finishes and saves valid PCM', {
           const chunk = { id: data.id, bytes: view.byteLength, seconds: view.byteLength / 48000,
             rms: Math.sqrt(squared / (view.byteLength / 2)) };
           trace.chunks.push(chunk);
-          window.modelDiagnostic(`Real GPU chunk ${data.id}: ${chunk.seconds.toFixed(3)} seconds of speech at ${((performance.now() - trace.started) / 1000).toFixed(2)}s.`);
+          window.modelDiagnostic(`Real CPU chunk ${data.id}: ${chunk.seconds.toFixed(3)} seconds of speech at ${((performance.now() - trace.started) / 1000).toFixed(2)}s.`);
         });
       }
       postMessage(message, ...args) {
@@ -67,14 +66,14 @@ test('real Micro speech plays before generation finishes and saves valid PCM', {
   const support = await page.evaluate(async () => {
     const version = new URL(document.querySelector('script[type="module"]').src).search;
     const { getStreamConfig } = await import(new URL(`streaming-player.js${version}`, location.href).href);
-    const adapter = await navigator.gpu?.requestAdapter();
-    return { gpu: Boolean(adapter), codec: (await getStreamConfig())?.codec, isolated: crossOriginIsolated };
+    return { gpu: Boolean(navigator.gpu), codec: (await getStreamConfig())?.codec, isolated: crossOriginIsolated };
   });
-  if (!support.gpu || !support.codec) {
-    t.skip(`WebGPU/native streaming unavailable (${JSON.stringify(support)}). Configure a supported Chromium; software GPU requires NARRATE_SOFTWARE_WEBGPU=1.`);
+  assert.equal(support.gpu, false, 'CPU generation runs without any WebGPU API.');
+  if (!support.codec) {
+    t.skip(`Native streaming unavailable (${JSON.stringify(support)}). Configure a supported Chromium.`);
     return;
   }
-  t.diagnostic(`Using ${software ? 'explicit software WebGPU (not a phone benchmark)' : 'the browser WebGPU adapter'} and native ${support.codec}.`);
+  t.diagnostic(`Using CPU/WebAssembly and native ${support.codec}; this machine is not an iPhone benchmark.`);
   if (process.env.NARRATE_TEST_ISOLATION === '0') assert.equal(support.isolated, false);
   // Leave enough speech after the startup buffer to prove playback overlaps inference.
   const passage = 'Extraordinary possibilities emerge when technology becomes accessible, allowing thoughtful experimentation with beautifully expressive narration across different environments.';

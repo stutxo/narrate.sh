@@ -17,7 +17,7 @@
 </style>
 <h1 id="title">Speech audition</h1>
 <p>Compare samples at the same nominal listening pace. Listen for missing words, numbers, pronunciation, natural pauses, and tiring or distorted speech before revealing the rates.</p>
-<p id="description" class="muted">Runs locally with WebGPU. Signal checks are not speech-quality scores.</p>
+<p id="description" class="muted">Runs locally in this browser. Signal checks are not speech-quality scores.</p>
 <form id="settings">
   <fieldset id="fields">
     <label>Passages<select id="corpus"><option value="standard">Prose, numbers, questions</option><option value="smoke">Quick: Hello world</option></select></label>
@@ -29,5 +29,5 @@
 <p><button id="stop" hidden>Stop</button> <button id="reveal" disabled>Reveal rates and timings</button> <button id="json" disabled>Save report JSON</button></p>
 <p id="status" role="status">Ready. Keep this page in the foreground while generating.</p>
 <div id="results"></div>
-<script type="module" src="./audition.js?v=13"></script>
+<script type="module" src="./audition.js?v=14"></script>
 </html>

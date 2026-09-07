@@ -5,7 +5,7 @@ import { startBrowser, openApp, session, waitSession, reply, audioState, PASSAGE
 
 let environment, configSource;
 before(async () => {
-  configSource = await readFile(new URL('../model-config.js', import.meta.url), 'utf8');
+  configSource = await readFile(new URL('../models/pocket-config.js', import.meta.url), 'utf8');
   environment = await startBrowser();
 });
 after(async () => { await environment?.close(); });
@@ -19,7 +19,7 @@ const text = ['The first reader', 'The second reader', 'The final reader']
 async function changeConfig(page, { revision, name = 'Another local voice', expectAudio = true } = {}) {
   let source = configSource.replace(/name: '[^']*'/, `name: ${JSON.stringify(name)}`);
   if (revision) source = source.replace(/revision: '[^']*'/, `revision: ${JSON.stringify(revision)}`);
-  await page.route('**/model-config.js*', route => route.fulfill({ contentType: 'application/javascript', body: source }));
+  await page.route('**/models/pocket-config.js*', route => route.fulfill({ contentType: 'application/javascript', body: source }));
   await page.reload();
   await page.waitForFunction(() => !document.querySelector('#text').disabled);
   if (expectAudio) {
@@ -82,12 +82,12 @@ test('changing only the model label loads metadata and preserves Resume compatib
   const { page, errors } = app;
   const saved = await recording(page), requests = [];
   page.on('request', request => requests.push(request.url()));
-  await changeConfig(page, { name: 'Renamed Micro' });
-  assert.equal(await page.locator('#model-name').textContent(), 'Renamed Micro · WebGPU');
-  assert.match(await page.locator('.lede').textContent(), /Renamed Micro/);
+  await changeConfig(page, { name: 'Renamed Pocket' });
+  assert.equal(await page.locator('#model-name').textContent(), 'Renamed Pocket · Alba · CPU');
+  assert.match(await page.locator('.lede').textContent(), /Renamed Pocket/);
   assert.equal(await page.locator('#speak').textContent(), 'Resume generation');
   await assertPreserved(page, saved);
-  assert.deepEqual(requests.filter(url => /\/models\/|\/vendor\/kitten\/|huggingface\.co|speech-worker\.js/.test(url)), [],
+  assert.deepEqual(requests.filter(url => /\/models\/(?![^/]*-config\.js)|\/vendor\/(?:kitten|pocket)\/|huggingface\.co|speech-worker\.js/.test(url)), [],
     'Opening the app reads model metadata without importing its adapter, inference runtime, or weights');
   await page.locator('#speak').click();
   await page.waitForFunction(() => window.__speech.requests.length > 0);

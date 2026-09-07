@@ -2,7 +2,8 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { MODEL, AUDIO } from '../model-config.js';
+import { MODEL as PRODUCTION, AUDIO } from '../model-config.js';
+import { MODEL } from './models/kitten-config.js';
 
 const source = (await readFile(new URL('../speech-worker.js', import.meta.url), 'utf8'))
   .replace(/^import .*;\n/gm, '')
@@ -12,8 +13,9 @@ const adapterSource = (await readFile(new URL('../models/kitten.js', import.meta
 function worker(waveform, tokenize = () => [0, 1, 0], options = {}) {
   const replies = [], loads = [], imports = [], inputs = [], events = {}, calls = [], stats = { initialized: 0, generated: 0 };
   let now = 0;
+  const config = options.config || MODEL;
   const context = {
-    MODEL, AUDIO, Float32Array, Uint8Array, DataView, Number, onmessage: null,
+    MODEL: config, AUDIO, Float32Array, Uint8Array, DataView, Number, onmessage: null,
     performance: { now: () => now },
     console: { error() {} }, // Expected rejection cases should stay quiet.
     addEventListener(type, callback) { events[type] = callback; },
@@ -28,13 +30,13 @@ function worker(waveform, tokenize = () => [0, 1, 0], options = {}) {
   vm.createContext(context);
   vm.runInContext(adapterSource, context);
   context.loadAdapter = async () => {
-    imports.push(MODEL.adapter);
+    imports.push(config.adapter);
     if (options.importGate) await options.importGate;
     return { createModel: options.createModel || context.createModel };
   };
   vm.runInContext(source, context);
   return { replies, loads, imports, inputs, events, stats, calls,
-    send: (id, options = {}) => context.onmessage({ data: { type: 'generate', id, text: 'Hello world.', modelId: MODEL.id, ...options } }),
+    send: (id, options = {}) => context.onmessage({ data: { type: 'generate', id, text: 'Hello world.', modelId: config.id, ...options } }),
   };
 }
 
@@ -167,17 +169,40 @@ const failedFrontend = worker(new Float32Array([0, .5]), () => {
 await failedFrontend.send(17);
 assert.equal(failedFrontend.stats.generated, 0, 'GPU loss during asynchronous text preparation must not launch inference.');
 
-const configSource = await readFile(new URL('../model-config.js', import.meta.url), 'utf8');
-assert(!/^\s*import\b/m.test(configSource) && !/\bimport\s*\(/.test(configSource), 'UI model metadata cannot import a runtime.');
+// The production architecture uses the same lazy, strict worker boundary.
+const production = worker(undefined, undefined, { config: PRODUCTION, createModel: async ({ config, status }) => {
+  assert.equal(config, PRODUCTION); status('Starting CPU…');
+  return { generate: async (text, rate) => {
+    assert.equal(text, 'Hello world.'); assert.equal(rate, 1);
+    return { samples: new Float32Array([-.5, .5]), ...AUDIO };
+  } };
+} });
+assert.equal(production.imports.length, 0);
+await production.send(18);
+assert.deepEqual(production.imports, [PRODUCTION.adapter]);
+assert.equal(production.stats.initialized, 0, 'CPU production does not initialize the historical GPU engine.');
+assert.equal(production.replies.at(-1).message.modelId, PRODUCTION.id);
+assert.equal(production.replies.at(-1).message.pcm.byteLength, 4);
+const invalidProductionRate = worker(undefined, undefined, { config: PRODUCTION });
+await invalidProductionRate.send(19, { synthesisRate: 1.5 });
+assert.equal(invalidProductionRate.imports.length, 0, 'Unsupported production rates cannot load any engine.');
+assert.equal(invalidProductionRate.replies.at(-1).message.type, 'error');
+
+const rootConfigSource = await readFile(new URL('../model-config.js', import.meta.url), 'utf8');
+const configSource = await readFile(new URL('../models/pocket-config.js', import.meta.url), 'utf8');
+assert(!/^\s*import\b/m.test(rootConfigSource) && !/\bimport\s*\(/.test(rootConfigSource), 'UI metadata cannot load an inference runtime.');
+assert(!/^\s*import\b/m.test(configSource) && !/\bimport\s*\(/.test(configSource), 'The reexported model configuration is metadata only.');
 assert.deepEqual(AUDIO, { sampleRate: 24000, channels: 1 });
-assert.match(MODEL.revision, /^[a-f0-9]{40}$/);
-assert(MODEL.synthesisRates.includes(MODEL.defaultRate));
-for (const [from, to] of [[MODEL.revision, '0'.repeat(40)], [MODEL.voice, 'Another voice'],
-  [MODEL.adapter, MODEL.adapter.replace('v=', 'v=next-')]]) {
-  const changed = vm.runInNewContext(configSource.replaceAll('export const ', 'const ').replace(from, to) + '\nMODEL;');
-  assert.notEqual(changed.id, MODEL.id, 'Weights, voice and adapter compatibility changes automatically change generation identity.');
+assert.equal(PRODUCTION.backend, 'wasm');
+assert.equal(PRODUCTION.voice, 'Alba');
+assert.match(PRODUCTION.revision, /^[a-f0-9]{40}$/);
+assert.deepEqual(PRODUCTION.synthesisRates, [1]);
+for (const [from, to] of [[PRODUCTION.revision, '0'.repeat(40)], [PRODUCTION.voice, 'Another voice'],
+  [PRODUCTION.adapter, PRODUCTION.adapter.replace('v=', 'v=next-')]]) {
+  const changed = vm.runInNewContext(configSource.replaceAll('export const ', 'const ').replaceAll(from, to) + '\nMODEL;');
+  assert.notEqual(changed.id, PRODUCTION.id, 'Weights, voice and adapter changes update generation identity.');
 }
 const relabelled = vm.runInNewContext(configSource.replaceAll('export const ', 'const ')
-  .replace(`name: '${MODEL.name}'`, "name: 'A clearer UI label'") + '\nMODEL;');
-assert.equal(relabelled.id, MODEL.id, 'UI-only labels do not invalidate saved generation.');
-console.log('Worker passed: lazy/replaced adapters, config identity, Micro frontend/voice/reuse, canonical PCM, timings and failure races.');
+  .replace(`name: '${PRODUCTION.name}'`, "name: 'A clearer UI label'") + '\nMODEL;');
+assert.equal(relabelled.id, PRODUCTION.id, 'UI-only labels do not invalidate saved generation.');
+console.log('Worker passed: lazy CPU production and historical Micro adapters, configuration identity, canonical PCM, timings and failure races.');

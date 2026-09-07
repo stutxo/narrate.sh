@@ -39,7 +39,7 @@ function installSpeech() {
           this.onmessage?.({ data: { type: 'error', id: message.id, message: `Injected ${this.key} failure.` } }); return;
         }
         const pcm = new Uint8Array(48000), view = new DataView(pcm.buffer);
-        const amplitude = { kitten: 1000, inflect: 2000, pocket: 3000 }[this.key];
+        const amplitude = { kitten: 1000, inflect: 2000, pocket: 3000, 'pocket-cpu': 4000 }[this.key];
         for (let i = 0; i < 24000; i++) view.setInt16(i * 2, Math.round(Math.sin(i * 2 * Math.PI * 220 / 24000) * amplitude), true);
         const initMs = this.calls === 1 ? 200 : 0;
         this.onmessage?.({ data: { type: 'audio', id: message.id, modelId: message.modelId, pcm, sampleRate: 24000,
@@ -66,7 +66,7 @@ test('model comparison blinds stable identities, releases sequential workers and
   assert.match(await page.locator('#warning').textContent(), /iPhone.*crash/);
   assert.match(await page.locator('#cautions').textContent(), /237 MB.*shader-f16.*Float16Array/);
   assert.match(await page.locator('#cautions').textContent(), /older browser checkpoint/);
-  assert.equal(await page.locator('#models input:checked').count(), 3);
+  assert.equal(await page.locator('#models input:checked').count(), 1);
   const report = await page.evaluate(options => {
     window.__seenCards = [];
     window.addEventListener('comparison-result', () => window.__seenCards.push(document.querySelectorAll('#results article').length));
@@ -185,4 +185,21 @@ test('the actual comparison worker validates identity, rate and finite PCM throu
   assert.deepEqual(result.pcm, [-32768, -16384, 0, 16384, 32767]);
   assert.equal(result.metrics.audioSeconds, 5 / 24000); assert.equal(result.metrics.synthesisRate, 1);
   assert(Number.isFinite(result.metrics.generationMs));
+});
+
+
+test('CPU comparison works without WebGPU and keeps historical Kitten identity', { timeout: 10000 }, async t => {
+  const { page, errors } = await openComparison(t);
+  await page.evaluate(() => Object.defineProperty(navigator, 'gpu', { configurable: true, value: undefined }));
+  assert.equal(await page.locator('#models input:checked').inputValue(), 'pocket-cpu');
+  const report = await page.evaluate(() => window.comparison.run({ corpus: 'smoke', repeats: 1, seed: 42 }));
+  assert.deepEqual(report.failures, []); assert.equal(report.results.length, 1);
+  assert.equal(report.models[0].key, 'pocket-cpu'); assert.equal(report.models[0].backend, 'wasm');
+  assert.equal(report.results[0].playbackRate, 1); assert(report.results[0].signal.rms > 0);
+  const historical = CANDIDATES.find(model => model.key === 'kitten');
+  assert.equal(historical.repository, 'KittenML/kitten-tts-micro-0.8'); assert.equal(historical.voice, 'Bella');
+  assert.notEqual(historical.id, report.models[0].id);
+  const mixed = await page.evaluate(() => window.comparison.run({ models: ['kitten', 'pocket-cpu'], corpus: 'smoke', seed: 42 }));
+  assert.equal(mixed.results.length, 1); assert.deepEqual(mixed.failures, [{ modelKey: 'kitten', message: 'This model requires WebGPU.' }]);
+  assert.deepEqual(errors, []);
 });

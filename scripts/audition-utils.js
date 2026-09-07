@@ -1,4 +1,4 @@
-import { MODEL } from '../model-config.js?v=13';
+import { MODEL } from '../model-config.js?v=14';
 
 export const passages = {
   prose: 'The quiet garden filled with birdsong as the morning sun warmed the trees.',

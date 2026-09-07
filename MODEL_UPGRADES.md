@@ -1,26 +1,26 @@
 # Updating the speech model
 
-`model-config.js` selects one model. It contains lightweight identity and download metadata, the voice, token limit, and supported synthesis rates. The main UI can import `MODEL.name` and `MODEL.id` without importing a runtime. `speech-worker.js` dynamically imports the configured adapter only after a valid generation request. There is no model picker, registry, fallback, or server inference.
+`model-config.js` selects one model by re-exporting the lightweight `models/pocket-config.js`. The latter contains identity and download metadata, voice, token limit, and supported synthesis rates. The main UI can import `MODEL.name` and `MODEL.id` without importing a runtime. `speech-worker.js` dynamically imports the configured adapter only after a valid generation request. There is no model picker, registry, fallback, or server inference.
 
-The current adapter is `models/kitten.js`, using the pinned [Kitten WebGPU engine](https://github.com/svenflow/kitten-tts-webgpu/tree/35f31049363ea39464dc05d42c1135b5c9e3235f). It owns model loading, GPU event handling, the dictionary/rules frontend, number expansion, voice selection, and splitting expanded text to the model's context limit. The model and Bella voice remain unchanged by this separation.
+The current adapter is `models/pocket.js`, using the pinned community [jax-js Pocket browser port](https://github.com/ekzhang/jax-js/blob/970fa22d934ce2e617cd3a993c6ecc8b736496f2/website/src/routes/tts/pocket-tts.ts). It selects only WASM/FP32, caches pinned assets when available, tokenizes text, splits oversized inputs without truncation, and releases decoder states between passages. This is Kyutai's model with Alba, using an older tested browser checkpoint; it is not Kyutai's official Python runtime. Upstream library or model releases do not update the site automatically.
 
 ## Compatible weights
 
-For weights supported by the existing Kitten engine, update `repository`, the full pinned `revision`, `weightsFile`, `voicesFile`, `voice`, and the relevant name/download/token metadata in `model-config.js`. Keep production `defaultRate: 1` unless a matched-pace audition supports changing it. Compatible means the graph, tensor names/shapes, voice archive, tokenizer and phoneme conventions fit this engine; an `.onnx` extension alone does not establish compatibility.
+For weights supported by the pinned Pocket forward pass, update the full repository/revision pins, weight file and expected byte size, voice/tokenizer pins, and related metadata in `models/pocket-config.js`. Asset size expectations in the adapter must match. Keep production `defaultRate: 1`; this adapter supports only natural 1× synthesis. Compatible means the tensor names/shapes, tokenizer, voice embeddings and forward pass agree; a safetensors file alone does not establish compatibility. Test a new upstream checkpoint before selecting it.
 
 The worker passes the current configuration into the adapter. An adapter does not retain a separately imported weights pin. No worker, playback, or UI logic needs model-specific edits for compatible weights.
 
-Use the normal release cache update when publishing a changed configuration: update the `model-config.js` query in its importers and the application script queries that load them. This makes previously visited browsers fetch the new configuration. Keep these deployment queries distinct from the adapter compatibility version below.
+Use the normal release cache update when publishing a changed configuration: update the metadata leaf query in `model-config.js`, its importers, and the application script queries that load them. This makes previously visited browsers fetch the new configuration. Keep these deployment queries distinct from the adapter compatibility version below.
 
-`MODEL.id` is derived from the pinned files, voice, default synthesis rate, token limit, and versioned adapter URL. The app uses it to prevent resuming an old recording with a different generation setup. Previously saved audio can still play; regenerating it uses the current model from the beginning.
+`MODEL.id` is derived from the pinned files, voice, source revision, backend, precision, seed, default synthesis rate, token limit, and versioned adapter URL. The app uses it to prevent resuming an old recording with a different generation setup. Previously saved audio can still play; regenerating it uses the current model from the beginning.
 
 Each request carries the UI's model identity. A worker served from a different deployment rejects a mismatch or missing identity before importing an adapter and asks for a reload. Every audio response also carries the worker's identity; the app and audition tool must reject a different or missing identity before accepting PCM. This covers both an older open page fetching a newer worker and a newer page receiving older worker code that lacks the request check. Query-stamped static URLs are cache controls, not immutable files.
 
-The adapter query (`models/kitten.js?v=1`) is a **generation compatibility version**, separate from ordinary UI deployment/cache queries. Bump it when changing the runtime, frontend, normalization, or other generation behavior. Update the adapter's runtime import cache query when its vendored artifact changes. A UI-only cache or label change must not change the adapter compatibility version. Weight and voice pin changes already change `MODEL.id` automatically.
+The adapter query (`models/pocket.js?v=1`) is a **generation compatibility version**, separate from ordinary UI deployment/cache queries. Bump it when changing the runtime, frontend, normalization, or other generation behavior. Update the adapter's runtime import cache query when its vendored artifact changes. A UI-only cache or label change must not change the adapter compatibility version. Weight and voice pin changes already change `MODEL.id` automatically.
 
 ## A different architecture
 
-Add a small adapter and point `MODEL.adapter` at it. Arbitrary architectures require their own runtime/frontend adapter; they cannot be installed by changing a Kitten weights URL. Keep heavyweight imports and GPU work inside the adapter so they load only in the worker.
+Add a small adapter and point `MODEL.adapter` at it. Arbitrary architectures require their own runtime/frontend adapter; they cannot be installed by changing a weights URL. Keep heavyweight imports and inference inside the adapter so they load only in the worker.
 
 An adapter exports:
 
@@ -58,6 +58,6 @@ The worker owns serialization, fatal state, elapsed timings, waveform validation
 
 Run `npm test` for the worker/adapter, configured URL/voice, lazy import, replacement-adapter, canonical-format, failure-race, storage and playback contracts. The Kitten source-excitation regression remains offline and checks the actual vendored bundle against the pinned original.
 
-Then run `npm run test:model` with real WebGPU to exercise the current worker through playback. For listening comparisons use `npm run audition` or `scripts/audition.html`: include prose, numbers and questions, warm each candidate, compare at matched nominal pace, and check the target phone. PCM sanity checks do not establish pronunciation quality. Software WebGPU is an explicit correctness option, not evidence of phone performance.
+Then run `NARRATE_TEST_ISOLATION=0 npm run test:model` to exercise real CPU/WASM generation through native playback with WebGPU absent. For listening comparisons use `npm run audition` or `scripts/audition.html`: include prose, numbers and questions, warm each candidate, compare at matched nominal pace, and check the target phone. PCM sanity checks do not establish pronunciation quality. Desktop CPU timings are not evidence of phone performance. Historical GPU models remain optional comparison-tool candidates, with their identities preserved separately.
 
 If the adapter or its runtime changes, preserve its license/source notices and reproducible vendor build, and include new adapter assets in the Pages artifact. Do not commit model weights or audition recordings.

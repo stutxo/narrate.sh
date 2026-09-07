@@ -9,9 +9,9 @@ test('audition plans keep blinded labels stable and balance comparison order', (
   const plan = auditionPlan({ seed: 7 });
   assert.deepEqual(plan, auditionPlan({ seed: 7 }));
   assert.equal(plan.targetRate, 1, 'Comparisons default to normal listening pace.');
-  assert.equal(plan.jobs.length, 27);
-  assert.deepEqual(plan.candidates.map(candidate => candidate.synthesisRate).sort(), [1, 1.2, 1.5]);
-  assert(new Set(Array.from({ length: 12 }, (_, seed) => JSON.stringify(auditionPlan({ seed }).candidates))).size > 1);
+  assert.equal(plan.jobs.length, 9 * MODEL.synthesisRates.length);
+  assert.deepEqual(plan.candidates.map(candidate => candidate.synthesisRate).sort(), [...MODEL.synthesisRates].sort());
+  if (MODEL.synthesisRates.length > 1) assert(new Set(Array.from({ length: 12 }, (_, seed) => JSON.stringify(auditionPlan({ seed }).candidates))).size > 1);
   for (const passage of plan.corpus) for (const candidate of plan.candidates) {
     const positions = [];
     for (let repeat = 1; repeat <= 3; repeat++) {
@@ -19,7 +19,7 @@ test('audition plans keep blinded labels stable and balance comparison order', (
       positions.push(jobs.findIndex(job => job.label === candidate.label));
       assert.equal(jobs.find(job => job.label === candidate.label).synthesisRate, candidate.synthesisRate);
     }
-    assert.equal(new Set(positions).size, 3, 'Every candidate occupies each timing position for each passage.');
+    assert.equal(new Set(positions).size, MODEL.synthesisRates.length, 'Candidates rotate through all available timing positions.');
     assert(Math.abs(candidate.synthesisRate * (plan.targetRate / candidate.synthesisRate) - 1) < 1e-12);
   }
   for (const options of [{ rates: [] }, { rates: [1, 1] }, { rates: [1, 2] }, { rates: ['1'] },
@@ -75,7 +75,7 @@ test('quiet edges measure waveform padding without treating internal pauses as p
 function installSpeech() {
   const controls = window.__auditionTest = { requests: [], workers: [], liveUrls: new Set(), mode: 'auto', holdAfter: Infinity,
     wakeLocks: [], wakeRequests: 0, wakeMode: 'auto', visibility: 'visible' };
-  Object.defineProperty(navigator, 'gpu', { configurable: true, value: {} });
+  Object.defineProperty(navigator, 'gpu', { configurable: true, get() { throw new Error('CPU auditions must not access WebGPU.'); } });
   Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => controls.visibility });
   Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request: async type => {
     if (type !== 'screen') throw new Error('Unexpected wake lock type.');
@@ -132,9 +132,8 @@ async function openAudition(t, configSource) {
 const quickPlan = { corpus: 'smoke', repeats: 1, seed: 7 };
 
 test('auditions follow the configured model and its supported rates', { timeout: 20000 }, async t => {
-  const config = (await readFile(new URL('../model-config.js', import.meta.url), 'utf8'))
-    .replace(/name: '[^']*'/, "name: 'Future voice'")
-    .replace('synthesisRates: Object.freeze([1, 1.2, 1.5])', 'synthesisRates: Object.freeze([1])');
+  const config = (await readFile(new URL('../models/pocket-config.js', import.meta.url), 'utf8'))
+    .replace(/name: '[^']*'/, "name: 'Future voice'");
   const { page, errors } = await openAudition(t, config);
   assert.equal(await page.locator('#pace').inputValue(), '1');
   const report = await page.evaluate(options => window.audition.run(options), quickPlan);
@@ -150,14 +149,14 @@ test('auditions follow the configured model and its supported rates', { timeout:
 test('the browser audition excludes warmups and plays native WAVs at matched nominal pace', { timeout: 20000 }, async t => {
   const { page, errors } = await openAudition(t);
   const report = await page.evaluate(options => window.audition.run(options), { ...quickPlan, targetRate: 1.5 });
-  assert.equal(report.warmups.length, 3); assert.equal(report.results.length, 3);
-  assert.deepEqual(report.model, { id: MODEL.id, name: MODEL.name, voice: MODEL.voice });
+  assert.equal(report.warmups.length, 1); assert.equal(report.results.length, 1);
+  assert.deepEqual(report.model, { id: MODEL.id, name: MODEL.name, voice: MODEL.voice, backend: MODEL.backend });
   assert(await page.evaluate(id => window.__auditionTest.requests.every(request => request.modelId === id), report.model.id));
   assert.equal(await page.title(), `${MODEL.name} audition`);
   assert.equal(report.backgrounded, false);
   assert.equal(await page.evaluate(() => window.__auditionTest.wakeRequests), 1);
   assert(await page.evaluate(() => window.__auditionTest.wakeLocks.every(lock => lock.released)), 'Completion releases the screen.');
-  assert.equal(await page.evaluate(() => window.__auditionTest.requests.length), 6);
+  assert.equal(await page.evaluate(() => window.__auditionTest.requests.length), 2);
   assert.equal(report.results.reduce((sum, row) => sum + row.initMs, 0), 0);
   assert.equal(report.warmups.reduce((sum, row) => sum + row.initMs, 0), 2000);
   for (const row of report.results) {
@@ -180,7 +179,7 @@ test('the browser audition excludes warmups and plays native WAVs at matched nom
   assert.equal(await page.locator('.detail:visible').count(), 0, 'Rates stay hidden until the listener requests them.');
   await page.locator('#reveal').click();
   assert((await page.locator('.detail:visible').count()) > 0);
-  assert.equal(await page.evaluate(() => window.__auditionTest.liveUrls.size), 3);
+  assert.equal(await page.evaluate(() => window.__auditionTest.liveUrls.size), 1);
   assert(await page.evaluate(() => window.__auditionTest.workers.every(worker => worker.dead)));
   assert.deepEqual(errors, []);
 });
@@ -188,12 +187,12 @@ test('the browser audition excludes warmups and plays native WAVs at matched nom
 test('Stop and worker failures remain failures, and rerunning releases prior audio', { timeout: 20000 }, async t => {
   const { page, errors } = await openAudition(t);
   await page.evaluate(options => window.audition.run(options), quickPlan);
-  assert.equal(await page.evaluate(() => window.__auditionTest.liveUrls.size), 3);
+  assert.equal(await page.evaluate(() => window.__auditionTest.liveUrls.size), 1);
   await page.evaluate(options => {
-    window.__auditionTest.holdAfter = 4;
+    window.__auditionTest.holdAfter = 2;
     window.__run = null;
     window.audition.run(options).then(() => { window.__run = 'success'; }, error => { window.__run = error.message; });
-  }, quickPlan);
+  }, { ...quickPlan, repeats: 2 });
   await page.waitForFunction(() => window.audition.report.results.length === 1);
   assert.equal(await page.evaluate(() => window.__auditionTest.liveUrls.size), 1, 'Old comparison URLs are revoked on rerun.');
   assert.deepEqual(await page.locator('audio').evaluate(audio => ({ controls: audio.controls, inert: audio.inert, paused: audio.paused })),
@@ -252,8 +251,8 @@ test('Stop and worker failures remain failures, and rerunning releases prior aud
     window.__auditionTest.mode = 'auto'; window.__auditionTest.wakeMode = 'denied';
     return window.audition.run(options);
   }, quickPlan);
-  assert.equal(recovered.results.length, 3); assert.equal(recovered.error, undefined);
-  assert.equal(await page.evaluate(() => window.__auditionTest.liveUrls.size), 3);
+  assert.equal(recovered.results.length, 1); assert.equal(recovered.error, undefined);
+  assert.equal(await page.evaluate(() => window.__auditionTest.liveUrls.size), 1);
   assert.equal(recovered.backgrounded, false, 'A fresh run resets the background warning; denied wake locks do not block speech.');
   await page.evaluate(options => {
     window.__auditionTest.mode = 'hold'; window.__auditionTest.wakeMode = 'late'; window.__run = null;

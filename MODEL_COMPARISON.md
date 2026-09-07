@@ -1,22 +1,22 @@
 # Mobile voice comparison — 7 September 2026
 
-The main app still uses Kitten Micro / Bella. New sessions now default to 1× playback; an existing saved speed is preserved. Alternative models are isolated in a developer comparison page and do not add imports, model downloads or controls to the main app.
+This document records the original GPU comparison; its saved A/B/C samples and metadata remain unchanged. The main app now uses Pocket TTS / Alba on CPU/WASM at 1× after listening review of B. The browser checkpoint and voice are the same, while execution changes from WebGPU FP32 to WASM FP32. The comparison tool defaults to `pocket-cpu`; historical GPU candidates remain optional.
 
 ## Candidates
 
 | Candidate | Model download | Browser path | Important limitation |
 | --- | --- | --- | --- |
-| Kitten Micro 0.8 / Bella | About 45 MB including voices | Existing WebGPU adapter | Current production baseline; dictionary/rules pronunciation frontend |
+| Kitten Micro 0.8 / Bella | About 45 MB including voices | Existing WebGPU adapter | Original production baseline; dictionary/rules pronunciation frontend |
 | Inflect Micro v2 / default male | About 38 MB, plus 26 MB runtime/frontend | ONNX Runtime Web 1.27 native WebGPU; eSpeak frontend | Upstream disables Apple mobile GPU because repeated inference can crash the page |
 | Pocket TTS / Alba, browser checkpoint | About 237 MB including voice/tokenizer | jax-js WebGPU FP16 | Requires shader-f16 and Float16Array; uses the browser port's older checkpoint |
 
 Download sizes are not peak memory measurements. Pocket's native CPU performance claims and the newest Pocket release are not measurements of this browser adapter.
 
-An unchecked **Pocket FP32 WebGPU** variant is also available under `pocket-f32`. It uses the same FP16 weight download but computes in FP32, with greater memory use and potentially lower throughput. It is an explicit experiment for adapters without shader-f16; neither Pocket variant silently falls back to another backend or precision. Our available Chromium 152 SwiftShader adapter exposes WebGPU but lacks shader-f16, so the default Pocket variant correctly rejected it before downloading weights.
+An unchecked **Pocket FP32 WebGPU** variant is also available under `pocket-f32`. It uses the same FP16 weight download but computes in FP32, with greater memory use and potentially lower throughput. It is an explicit experiment for adapters without shader-f16; neither Pocket variant silently falls back to another backend or precision. Our available Chromium 152 SwiftShader adapter exposes WebGPU but lacks shader-f16, so the FP16 Pocket variant correctly rejected it before downloading weights.
 
 Pins and source attribution:
 
-- Kitten: [official Micro weights](https://huggingface.co/KittenML/kitten-tts-micro-0.8/tree/1ccf72b2c2048fd17efac7de2fab32d10e225084); production configuration in `model-config.js`.
+- Kitten: [official Micro weights](https://huggingface.co/KittenML/kitten-tts-micro-0.8/tree/1ccf72b2c2048fd17efac7de2fab32d10e225084); historical configuration in `scripts/models/kitten-config.js`.
 - Inflect: [official ONNX graphs](https://huggingface.co/owensong/Inflect-Micro-v2-ONNX/tree/91b1ab6432323064ec0e8e9704d92fcecd24855f), [browser frontend and Apple mobile caveat](https://github.com/geronimi73/inflect-tts/tree/aa51b786f947635cfa1ebdea3ea160e4bca7136f); metadata in `scripts/models/inflect-config.js`.
 - Pocket: [pinned browser forward pass](https://github.com/ekzhang/jax-js/blob/970fa22d934ce2e617cd3a993c6ecc8b736496f2/website/src/routes/tts/pocket-tts.ts), [FP16 b6369a24 conversion](https://huggingface.co/ekzhang/jax-js-models/blob/2b0fc51b4f76ff56611741ab9267593decde7639/kyutai-pocket-tts_b6369a24-fp16.safetensors), [Alba and tokenizer](https://huggingface.co/kyutai/pocket-tts-without-voice-cloning/tree/fbf82802feb1f92664f3bcf6a0f01295a678853c); metadata in `scripts/models/pocket-config.js`.
 
@@ -67,4 +67,4 @@ NARRATE_TEST_ISOLATION=0 npm run compare:models -- --models kitten,inflect,pocke
 
 The published samples were collected in three separate, sequential browser runs and assembled without changing their PCM. Each source report is retained beside the combined report. A fresh run can have different initialization or compilation costs; exact cross-runtime waveform parity is not claimed.
 
-Micro remains the production model. A replacement should first pass listening review and sustained narration on a physical iPhone, including initial Play, buffer recovery, Stop/Resume and completed-track playback. Inflect's upstream Safari crash reports and Pocket's larger download/memory footprint remain relevant even though both produced valid test recordings here.
+Pocket CPU is now the production model for testing on the phone. Its real CPU smoke test passed with WebGPU inaccessible and without cross-origin isolation: the first “Hello world” generated 0.96 seconds of nonzero audio in 3.85 seconds after cold initialization, and a cached fresh worker initialized in 0.65 seconds. These desktop measurements do not promise realtime performance on iPhone. Test sustained narration, initial Play, buffer recovery, Stop/Resume and completed-track playback on the physical phone. The approximately 237 MB initial download and greater FP32 memory use remain relevant.

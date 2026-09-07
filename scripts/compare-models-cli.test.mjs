@@ -13,10 +13,11 @@ async function fixture(t, script) {
   const out = await mkdtemp(join(tmpdir(), 'narrate-cli-test-')); t.after(() => rm(out, { recursive: true, force: true }));
   const page = await environment.browser.newPage();
   await page.route('**/scripts/compare-models.html', route => route.fulfill({ contentType: 'text/html', body: `<script>${script}</script>` }));
-  const openBrowser = async () => ({ ...environment, browser: {
+  const launches = [];
+  const openBrowser = async options => { launches.push(options); return ({ ...environment, browser: {
     newPage: async () => page, version: () => environment.browser.version(),
-  } });
-  return { environment, page, out, openBrowser };
+  } }); };
+  return { environment, page, out, openBrowser, launches };
 }
 
 test('CLI timeout saves responsive partial audio and identifies the deadline', { timeout: 10000 }, async t => {
@@ -59,4 +60,31 @@ test('CLI deadline also terminates a renderer frozen inside adapter probing', { 
   assert.equal(saved.timedOut, true); assert.equal(saved.partial, true); assert.deepEqual(saved.results, []);
   assert.equal(saved.environment.gpu, null);
   assert.equal(app.environment.browser.isConnected(), false, 'Closing the owned browser does not require renderer JavaScript to respond.');
+});
+
+test('CLI defaults to CPU and exports a report without probing or enabling WebGPU', { timeout: 10000 }, async t => {
+  const app = await fixture(t, `
+    Object.defineProperty(navigator,'gpu',{get(){throw new Error('CPU CLI must not probe GPU');}});
+    window.comparison={ report:null, stop(){}, run(options){
+      return this.report={corpus:[],models:[],warmups:[],results:[],failures:[],requestedModels:options.models};
+    }};
+  `);
+  await main(['--software-gpu', '--out', app.out], app.openBrowser);
+  assert.deepEqual(app.launches, [{ args: [] }], 'A CPU run never enables the software GPU, even when the flag is supplied.');
+  const saved = JSON.parse(await readFile(join(app.out, 'report.json'), 'utf8'));
+  assert.deepEqual(saved.requestedModels, ['pocket-cpu']);
+  assert.equal(saved.environment.backend, 'wasm'); assert.equal(saved.environment.gpu, null);
+  assert.equal(saved.environment.softwareGpu, false); assert.equal(saved.exportComplete, true);
+  assert.match(await readFile(join(app.out, 'review.html'), 'utf8'), /CPU\/WebAssembly/);
+});
+
+test('explicit GPU comparison still rejects unacknowledged software adapters', { timeout: 10000 }, async t => {
+  const app = await fixture(t, `
+    Object.defineProperty(navigator,'gpu',{value:{requestAdapter:async()=>({info:{description:'SwiftShader'},features:[]})}});
+    window.comparison={report:null,stop(){},run(){throw new Error('Generation must not start');}};
+  `);
+  await assert.rejects(main(['--models', 'pocket-f32', '--out', app.out], app.openBrowser), /Software adapter detected/);
+  const saved = JSON.parse(await readFile(join(app.out, 'report.json'), 'utf8'));
+  assert.equal(saved.partial, true); assert.deepEqual(saved.results, []);
+  assert.equal(saved.environment.backend, 'webgpu-or-mixed');
 });

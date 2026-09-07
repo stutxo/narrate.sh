@@ -44,10 +44,12 @@ function installControls(options) {
   const controls = window.__speech = {
     requests: [], completed: [], pending: [], workers: [], terminated: 0,
     delay: options.delay ?? null, seconds: options.seconds ?? 1.2,
-    fault: options.fault || null, events: [], liveUrls: new Map(), peakReadBytes: 0,
+    fault: options.fault || null, events: [], liveUrls: new Map(), peakReadBytes: 0, gpuReads: 0,
   };
-  Object.defineProperty(navigator, "gpu", { configurable: true, value: options.gpu === false ? undefined : {
-    requestAdapter: async () => { if (options.gpu === "reject" || sessionStorage.getItem("test-gpu") === "reject") throw new Error("Adapter unavailable"); return {}; },
+  Object.defineProperty(navigator, "gpu", { configurable: true, get() {
+    controls.gpuReads++;
+    if (options.gpu === false) return undefined;
+    throw new Error("CPU narration must not access navigator.gpu.");
   } });
   if (options.noEncoder) window.AudioEncoder = undefined;
   if (options.managedMedia) {

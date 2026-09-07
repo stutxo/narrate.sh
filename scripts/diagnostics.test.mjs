@@ -99,7 +99,9 @@ test('opt-in app timings export a usable report without narration or audio', asy
   assert.equal(report.outcome, 'ready');
   assert(report.firstPlaybackMs > 0);
   assert.equal(report.bufferWaitMs, 0);
-  assert.equal(report.environment.webgpu, true);
+  assert.equal(report.environment.backend, 'wasm');
+  assert.equal('webgpu' in report.environment, false);
+  assert.equal(await app.page.evaluate(() => window.__speech.gpuReads), 0);
   assert.equal(text.includes(privateText), false);
   assert.equal(text.includes('pcm'), false);
   cleanErrors(app.errors);

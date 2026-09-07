@@ -11,7 +11,7 @@ const help = `Usage: node scripts/audition.mjs [options]
   --text "A custom passage, up to 500 characters."
   --rates ${MODEL.synthesisRates.join(',')}  --repeats 3  --pace 1  --seed 42
   --out DIRECTORY   --timeout SECONDS (default: 1800)
-  --software-gpu    Explicit SwiftShader opt-in: correctness only, not a phone benchmark.
+  --software-gpu    Only used for a WebGPU model; ignored for the current CPU model.
 Set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH if Chromium is not installed by Playwright.
 Downloads about ${MODEL.downloadMB} MB for ${MODEL.name}, warms each rate, then writes report.json, raw WAVs, and review.html.
 Open review.html to listen at matched pace; raw WAV files alone play at their natural rate.`;
@@ -43,7 +43,7 @@ function reviewHtml(report) {
 const report=${data};
 document.title=report.model.name+' listening review';
 document.querySelector('h1').textContent=document.title;
-document.querySelector('#environment').textContent=report.environment.softwareGpu?'Software GPU run: correctness only, not phone performance.':'Browser GPU run: results apply only to this machine and test.';
+document.querySelector('#environment').textContent=report.environment.backend==='wasm'?'Browser CPU/WebAssembly: results apply only to this machine and test.':report.environment.softwareGpu?'Software GPU run: correctness only, not phone performance.':'Browser GPU run: results apply only to this machine and test.';
 for(const row of report.results){
  const card=document.createElement('article'),heading=document.createElement('h2'),text=document.createElement('p'),audio=document.createElement('audio'),detail=document.createElement('pre');
  heading.textContent=row.label+' · '+row.passage+' · repeat '+row.repeat;
@@ -59,7 +59,8 @@ document.querySelector('#reveal').onclick=()=>document.querySelectorAll('pre').f
 async function main() {
   if (process.argv.includes('--help') || process.argv.includes('-h')) { console.log(help); return; }
   const config = parse(process.argv.slice(2));
-  const environment = await startBrowser({ args: config.software
+  const needsGpu = MODEL.backend !== 'wasm';
+  const environment = await startBrowser({ args: needsGpu && config.software
     ? ['--enable-unsafe-webgpu', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : [] });
   let timer;
   try {
@@ -69,14 +70,14 @@ async function main() {
     await page.exposeFunction('auditionProgress', row => console.log(`${row.label} ${row.passage} repeat${row.repeat}: ${row.audioSeconds.toFixed(3)}s audio, ${(row.generationMs / 1000).toFixed(2)}s generation, headroom ${row.headroom.toFixed(2)}.`));
     await page.goto(`${environment.url}/scripts/audition.html`);
     await page.waitForFunction(() => window.audition);
-    const gpu = await page.evaluate(async () => {
+    const gpu = needsGpu ? await page.evaluate(async () => {
       const adapter = await navigator.gpu?.requestAdapter();
       if (!adapter) throw new Error('No WebGPU adapter. Use a supported browser or explicitly opt in to --software-gpu.');
       return { vendor: adapter.info?.vendor, architecture: adapter.info?.architecture,
         description: adapter.info?.description, features: [...adapter.features] };
-    });
+    }) : null;
     if (!config.software && /swiftshader|software/i.test(JSON.stringify(gpu))) throw new Error('Software adapter detected; pass --software-gpu to acknowledge correctness-only timing.');
-    console.log(config.software ? 'Explicit software WebGPU: correctness only, not a phone benchmark.' : 'Real browser WebGPU: this machine only, not an iPhone benchmark.');
+    console.log(!needsGpu ? 'Browser CPU/WebAssembly: this machine only, not an iPhone benchmark.' : config.software ? 'Explicit software WebGPU: correctness only, not a phone benchmark.' : 'Real browser WebGPU: this machine only, not an iPhone benchmark.');
     console.log(`Loading and warming each rate; writing artifacts to ${config.out}`);
     await page.evaluate(() => window.addEventListener('audition-result', event => window.auditionProgress(event.detail)));
     const report = await Promise.race([
@@ -84,7 +85,7 @@ async function main() {
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Audition timed out. Increase --timeout for a slow adapter.')), config.timeout); }),
     ]);
     clearTimeout(timer);
-    report.environment = { softwareGpu: config.software, gpu, browser: environment.browser.version() };
+    report.environment = { backend: needsGpu ? 'webgpu' : 'wasm', softwareGpu: needsGpu && config.software, gpu, browser: environment.browser.version() };
     report.browserErrors = errors;
     await mkdir(config.out, { recursive: true });
     for (const [index, row] of report.results.entries()) {

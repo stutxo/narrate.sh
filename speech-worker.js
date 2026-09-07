@@ -1,4 +1,4 @@
-import { MODEL, AUDIO } from './model-config.js?v=13';
+import { MODEL, AUDIO } from './model-config.js?v=14';
 
 let model, activeId, failure;
 
@@ -34,10 +34,10 @@ onmessage = async ({ data: { type, id, text, modelId, synthesisRate = MODEL.defa
     const { samples, sampleRate, channels } = await model.generate(text, synthesisRate);
     const generationMs = performance.now() - generationStarted;
     if (sampleRate !== AUDIO.sampleRate || channels !== AUDIO.channels) throw new Error('The speech model returned an unsupported audio format.');
-    if (!(samples instanceof Float32Array) || !samples.length) throw new Error('The GPU returned no audio. Resume to try again.');
+    if (!(samples instanceof Float32Array) || !samples.length) throw new Error('The speech model returned no audio. Resume to try again.');
     const pcm = new Uint8Array(samples.length * 2), view = new DataView(pcm.buffer);
     for (let i = 0; i < samples.length; i++) {
-      if (!Number.isFinite(samples[i])) throw new Error('The GPU returned invalid audio. Resume to try again.');
+      if (!Number.isFinite(samples[i])) throw new Error('The speech model returned invalid audio. Resume to try again.');
       const sample = Math.max(-1, Math.min(1, samples[i]));
       view.setInt16(i * 2, Math.round(sample * (sample < 0 ? 32768 : 32767)), true);
     }

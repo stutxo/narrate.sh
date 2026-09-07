@@ -1,5 +1,5 @@
-import { CANDIDATES } from './compare-config.js?v=1';
-import { passages, pcmStats, wavBytes } from './audition-utils.js?v=13';
+import { CANDIDATES } from './compare-config.js?v=14';
+import { passages, pcmStats, wavBytes } from './audition-utils.js?v=14';
 
 const $ = id => document.getElementById(id);
 const artifacts = new Map(), urls = [];
@@ -64,7 +64,7 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('pagehide', stop);
 
 function startWorker(model) {
-  worker = new Worker(new URL(`./compare-worker.js?model=${model.key}`, import.meta.url), { type: 'module' });
+  worker = new Worker(new URL(`./compare-worker.js?v=14&model=${model.key}`, import.meta.url), { type: 'module' });
   worker.onerror = event => { pending?.reject(new Error(event.message || 'The speech worker failed.')); pending = undefined; };
   worker.onmessage = ({ data }) => {
     if (!pending || data.id !== pending.id || data.type === 'status') return;
@@ -116,7 +116,7 @@ async function run(options = {}) {
   const report = window.comparison.report = { version: 1, createdAt: new Date().toISOString(), userAgent: navigator.userAgent,
     isolated: crossOriginIsolated, backgrounded: document.visibilityState !== 'visible',
     seed: selected.seed, repeats: selected.repeats, targetRate: 1, corpus: selected.corpus,
-    models: selected.models.map(({ key, id, name, voice, label }) => ({ key, id, name, voice, label })),
+    models: selected.models.map(({ key, id, name, voice, label, backend }) => ({ key, id, name, voice, label, backend })),
     warmups: [], results: [], failures: [],
     notes: ['Experimental comparison, not proof of phone performance or speech quality.',
       'Each model uses one sequential worker, one excluded warmup, and normal 1× synthesis/playback.',
@@ -125,10 +125,10 @@ async function run(options = {}) {
       'Signal checks never trim audio. Backgrounding may affect timings. Listen before revealing identities.'] };
   wake = { active: true, report }; holdScreen();
   try {
-    if (!navigator.gpu) throw new Error('This browser does not expose WebGPU.');
     for (const [index, model] of selected.models.entries()) {
       try {
         if (cancelled) throw new Error('Comparison stopped.');
+        if (model.backend !== 'wasm' && !navigator.gpu) throw new Error('This model requires WebGPU.');
         status(`Preparing model ${index + 1}/${selected.models.length}…`); startWorker(model);
         const warm = await generate(model, 'Hello world.');
         report.warmups.push({ modelId: model.id, label: model.label, ...warm.data.metrics });

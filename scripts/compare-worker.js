@@ -1,4 +1,4 @@
-import { CANDIDATES } from './compare-config.js?v=1';
+import { CANDIDATES } from './compare-config.js?v=14';
 
 const config = CANDIDATES.find(model => model.key === new URL(import.meta.url).searchParams.get('model'));
 let model, activeId, failure;
@@ -33,10 +33,10 @@ onmessage = async ({ data: { type, id, text, modelId, synthesisRate = 1 } }) => 
     const { samples, sampleRate, channels } = await model.generate(text, synthesisRate);
     const generationMs = performance.now() - generationStarted;
     if (sampleRate !== 24000 || channels !== 1) throw new Error('Unsupported comparison audio format.');
-    if (!(samples instanceof Float32Array) || !samples.length) throw new Error('The GPU returned no audio.');
+    if (!(samples instanceof Float32Array) || !samples.length) throw new Error('The model returned no audio.');
     const pcm = new Uint8Array(samples.length * 2), view = new DataView(pcm.buffer);
     for (let i = 0; i < samples.length; i++) {
-      if (!Number.isFinite(samples[i])) throw new Error('The GPU returned invalid audio.');
+      if (!Number.isFinite(samples[i])) throw new Error('The model returned invalid audio.');
       const sample = Math.max(-1, Math.min(1, samples[i]));
       view.setInt16(i * 2, Math.round(sample * (sample < 0 ? 32768 : 32767)), true);
     }

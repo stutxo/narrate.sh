@@ -1,4 +1,4 @@
-// Regenerate the experimental browser runtime; never downloads model weights.
+// Regenerate the shared Pocket browser runtime; never downloads model weights.
 // Requires Node 22+ and network access. Does not modify the site's dependencies.
 import { mkdtemp, mkdir, readFile, writeFile, copyFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -33,7 +33,7 @@ export { fromSafetensors, createFlowLMState, createMimiDecodeState, runFlowLMSte
 `);
   execFileSync(join(temporary, 'node_modules/.bin/esbuild'), ['entry.ts', '--bundle', '--format=esm',
     '--target=es2022', '--minify', '--log-level=warning', '--legal-comments=inline',
-    '--banner:js=/*! Experimental Pocket TTS WebGPU; source and licenses: NOTICE.md */',
+    '--banner:js=/*! Pocket TTS browser runtime; source and licenses: NOTICE.md */',
     `--outfile=${join(output, 'runtime.js')}`], { cwd: temporary, stdio: 'inherit' });
   await copyFile(join(temporary, 'node_modules/@jax-js/jax/LICENSE'), join(output, 'LICENSE-JAX-MIT'));
   // The published protobuf/tokenizer packages omit standalone license files.
@@ -43,9 +43,9 @@ export { fromSafetensors, createFlowLMState, createMimiDecodeState, runFlowLMSte
   const bsd = varintSource.match(/^(?:\/\/[^\n]*\n)+/u)?.[0];
   if (!bsd?.includes('Redistribution and use')) throw new Error('Missing protobuf BSD notice');
   await writeFile(join(output, 'LICENSE-PROTOBUF-BSD'), bsd.replace(/^\/\/ ?/gm, ''));
-  await writeFile(join(output, 'NOTICE.md'), `# Experimental Pocket TTS browser runtime
+  await writeFile(join(output, 'NOTICE.md'), `# Pocket TTS browser runtime
 
-This bundle contains the unmodified Pocket forward pass from [jax-js](https://github.com/ekzhang/jax-js/blob/${revision}/website/src/routes/tts/pocket-tts.ts), revision \`${revision}\`, by Eric Zhang (MIT). The local adapter follows its demo's prompt preparation and sampling defaults, requires WebGPU with explicitly selected FP16 or FP32 precision, collects PCM instead of playing it, bounds generation, and releases decoder states between passages. The adapter does not enable automatic WASM fallback.
+This bundle contains the unmodified Pocket forward pass from [jax-js](https://github.com/ekzhang/jax-js/blob/${revision}/website/src/routes/tts/pocket-tts.ts), revision \`${revision}\`, by Eric Zhang (MIT). This is a community browser port, not Kyutai's official Python runtime. The production adapter uses only the WASM backend with FP32 computation; the experimental comparison adapter explicitly selects WebGPU FP16 or FP32. Both follow the demo's prompt preparation and sampling defaults, collect PCM instead of playing it, bound generation, and release decoder states between passages. Neither adapter automatically changes backends. WASM kernels are compiled by this bundle, so no additional runtime binaries are downloaded. Without cross-origin isolation, WASM runs on one worker thread; shared-memory parallelism is optional. The compact FP16 weight download requires JavaScript Float16Array support even when computation uses FP32. The production adapter caches pinned model assets in browser CacheStorage when available; storage failures do not prevent generation.
 
 Bundled dependencies are pinned: ${Object.entries(dependencies).filter(([name]) => name !== 'esbuild').map(([name, version]) => `\`${name}@${version}\``).join(', ')}. Jax-js, its loaders and Eric Zhang's sentencepiece-buf package use MIT. Protobuf-ES is Copyright 2021-2025 Buf Technologies, Inc., under Apache-2.0, with Google varint code under BSD-3-Clause. See the adjacent license files. Build tool: esbuild ${dependencies.esbuild} (MIT); it is not part of the runtime. Reproduce with \`node scripts/vendor-pocket.mjs\`.
 

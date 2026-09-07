@@ -1,4 +1,4 @@
-// Real, serial WebGPU model comparison. No generated audio or text is uploaded.
+// Real, serial CPU/WebGPU model comparison. No generated audio or text is uploaded.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -7,7 +7,8 @@ import { startBrowser } from './app-fixtures.mjs';
 import { CANDIDATES } from './compare-config.js';
 
 const help = `Usage: npm run compare:models -- [options]
-  --models kitten,inflect,pocket (default: all three)
+  --models pocket-cpu (default: current production CPU model)
+  --models kitten,inflect,pocket  Optional historical WebGPU comparison.
   --models pocket-f32  Optional older Pocket checkpoint in explicit WebGPU FP32 mode.
   --corpus standard|smoke (default: standard)
   --text "A custom passage, up to 500 characters."
@@ -17,7 +18,7 @@ const help = `Usage: npm run compare:models -- [options]
 Set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH to your Chromium executable if needed.
 Models load one at a time. Each gets an excluded warmup, then the same passages.
 Synthesis and playback are 1×. Writes WAVs, report.json, and a blinded review.html.
-Inflect is experimental on iPhone; Pocket needs about 237 MB and shader-f16.
+Inflect is experimental on iPhone. Pocket needs about 237 MB; its optional FP16 GPU mode also needs shader-f16.
 Failed models are recorded in the report and cause a nonzero exit status.
 Timeouts allow up to 1 second to stop, 3 seconds to save partial artifacts, and 3 seconds for browser cleanup.`;
 
@@ -52,7 +53,7 @@ export function reviewHtml(report) {
 <h1>Model listening comparison</h1><p>All recordings play at their natural 1× speed. Compare the words, pronunciation, pauses and listening comfort before revealing the models. Signal checks do not score speech quality.</p>
 <p id="environment"></p><button id="reveal">Reveal models and timings</button><main></main><pre id="details" hidden></pre><script>
 const report=${data};
-document.querySelector('#environment').textContent=(report.environment.softwareGpu?'Software GPU: correctness only, not phone performance.':'Browser GPU: results apply only to this machine and test.')+' '+report.results.length+' recordings; '+report.failures.length+' failed models.';
+document.querySelector('#environment').textContent=(report.environment.backend==='wasm'?'Browser CPU/WebAssembly: results apply only to this machine and test.':report.environment.softwareGpu?'Software GPU: correctness only, not phone performance.':'Browser GPU: results apply only to this machine and test.')+' '+report.results.length+' recordings; '+report.failures.length+' failed models.';
 for(const row of report.results){
  const card=document.createElement('article'),heading=document.createElement('h2'),text=document.createElement('p'),audio=document.createElement('audio');
  heading.textContent=row.label+' · '+row.passage+' · repeat '+row.repeat;
@@ -75,7 +76,8 @@ async function bounded(operation, milliseconds, error) {
 export async function main(args = process.argv.slice(2), openBrowser = startBrowser) {
   if (args.includes('--help') || args.includes('-h')) { console.log(help); return; }
   const config = parse(args);
-  const environment = await openBrowser({ args: config.software
+  const needsGpu = config.options.models.some(key => CANDIDATES.find(model => model.key === key).backend !== 'wasm');
+  const environment = await openBrowser({ args: needsGpu && config.software
     ? ['--enable-unsafe-webgpu', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : [] });
   const started = Date.now(), timeoutError = new Error(`Comparison timed out after ${config.timeout / 1000} seconds.`);
   let page, gpu, runResult, report, failure;
@@ -89,15 +91,15 @@ export async function main(args = process.argv.slice(2), openBrowser = startBrow
         await page.exposeFunction('comparisonProgress', row => console.log(`${row.label} ${row.passage} repeat${row.repeat}: ${row.audioSeconds.toFixed(3)}s audio, ${(row.generationMs / 1000).toFixed(2)}s generation.`));
         await page.goto(`${environment.url}/scripts/compare-models.html`);
         await page.waitForFunction(() => window.comparison);
-        gpu = await page.evaluate(async () => {
+        gpu = needsGpu ? await page.evaluate(async () => {
           const adapter = await navigator.gpu?.requestAdapter();
           if (!adapter) throw new Error('No WebGPU adapter. Use a supported browser or explicitly opt in to --software-gpu.');
           return { vendor: adapter.info?.vendor, architecture: adapter.info?.architecture,
             description: adapter.info?.description, features: [...adapter.features] };
-        });
+        }) : null;
         if (failure) throw failure; // A late adapter response cannot start work after the deadline.
         if (!config.software && /swiftshader|software/i.test(JSON.stringify(gpu))) throw new Error('Software adapter detected; pass --software-gpu to acknowledge correctness-only timing.');
-        console.log(config.software ? 'Software WebGPU: correctness only, not a phone benchmark.' : 'Browser WebGPU: this machine only, not an iPhone benchmark.');
+        console.log(!needsGpu ? 'Browser CPU/WebAssembly: this machine only, not an iPhone benchmark.' : config.software ? 'Software WebGPU: correctness only, not a phone benchmark.' : 'Browser WebGPU: this machine only, not an iPhone benchmark.');
         console.log(`Serial model loading; output: ${config.out}`);
         await page.evaluate(() => window.addEventListener('comparison-result', event => window.comparisonProgress(event.detail)));
         runResult = page.evaluate(async options => {
@@ -117,7 +119,7 @@ export async function main(args = process.argv.slice(2), openBrowser = startBrow
       report ||= { version: 1, createdAt: new Date().toISOString(), corpus: [], models: [], warmups: [], results: [], failures: [] };
       report.error = error.message; report.partial = true; report.timedOut = error === timeoutError;
     }
-    report.environment = { softwareGpu: config.software, gpu: gpu ?? null, browser: environment.browser.version(), cache: 'Fresh browser context; disk/OS cache state not controlled.' };
+    report.environment = { backend: needsGpu ? 'webgpu-or-mixed' : 'wasm', softwareGpu: needsGpu && config.software, gpu: gpu ?? null, browser: environment.browser.version(), cache: 'Fresh browser context; disk/OS cache state not controlled.' };
     report.browserErrors = errors;
     report.exportedFiles = []; report.exportComplete = false;
     const saveReport = () => writeFile(resolve(config.out, 'report.json'), JSON.stringify(report, null, 2) + '\n');
