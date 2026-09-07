@@ -38,7 +38,7 @@ npx playwright-core install chromium
 NARRATE_TEST_ISOLATION=0 npm test
 ```
 
-`npm test` checks worker failures, finite PCM, number expansion, context limits, session ownership, atomic storage, model changes, playback controls, buffering recovery, and long narrations. Browser tests control speech arrival while using real IndexedDB, Plyr, audio encoders, and media buffers. They run without model downloads. A numeric regression also verifies the Kitten runtime's memory optimization against its original source.
+`npm test` checks worker failures, finite PCM, number expansion, context limits, session ownership, atomic storage, model changes, deployment caching, playback controls, buffering recovery, wake-lock races, and long narrations. Browser tests control speech arrival while using real IndexedDB, Plyr, audio encoders, and media buffers. They run without model downloads. Numeric regressions compare the runtime's memory and convolution optimizations with the original code; convolution also runs on software WebGPU against an independent CPU calculation.
 
 Run the actual model and native playback separately:
 
@@ -47,6 +47,14 @@ NARRATE_TEST_ISOLATION=0 npm run test:model
 ```
 
 This downloads the model and can take several minutes. It checks playback before generation finishes and validates the saved audio. Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` for an existing Chromium installation. `NARRATE_SOFTWARE_WEBGPU=1` explicitly permits software WebGPU for correctness testing; those timings do not measure phone performance.
+
+Measure the production worker with one initial call and two warm repeats:
+
+```sh
+NARRATE_TEST_ISOLATION=0 npm run benchmark:model -- --out /tmp/narrate-benchmark.json
+```
+
+The JSON report records startup, generation time, audio duration, signal levels, browser/GPU details, and the runtime hash. Real-time factor (RTF) is generation time divided by audio duration: below 1 means generation outpaces playback at 1×. Compare the same text and device; cache state is not controlled. Use `--help` for text, repeat, timeout, and explicit software-GPU options. Reports contain no passage text or audio, and the tool is not published with the site.
 
 `scripts/check-playback.html` is a local test fixture for native playback and Safari-style stream completion. Automated checks cannot judge pronunciation or prove sound reached a phone's speaker. Before release, listen on a physical iPhone and check initial Play, Pause, seeking, Stop/Resume, reload, and completed-track playback.
 

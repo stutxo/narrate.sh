@@ -57,6 +57,28 @@ function installControls(options) {
       return mode === "null" ? null : { features: new Set(["shader-f16"]) };
     } };
   } });
+  if (options.holdWakeLock) {
+    const wake = window.__wake = { pending: [], acquired: [], releases: [], visibility: "visible" };
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => wake.visibility });
+    Object.defineProperty(navigator, "wakeLock", { configurable: true, value: {
+      request: () => new Promise((resolve, reject) => wake.pending.push({ grant() {
+        const lock = Object.assign(new EventTarget(), { released: false, release: async () => {
+          if (lock.released) return;
+          lock.released = true; lock.dispatchEvent(new Event("release"));
+          if (options.holdWakeRelease) await new Promise(resolve => wake.releases.push(resolve));
+        } });
+        wake.acquired.push(lock); resolve(lock);
+      }, reject })),
+    } });
+    wake.show = visibility => {
+      wake.visibility = visibility;
+      if (visibility === "hidden") for (const lock of wake.acquired) void lock.release();
+      document.dispatchEvent(new Event("visibilitychange"));
+    };
+    wake.grant = () => { for (const request of wake.pending.splice(0)) request.grant(); };
+    wake.reject = () => { for (const request of wake.pending.splice(0)) request.reject(new DOMException("Wake lock was interrupted.", "NotAllowedError")); };
+    wake.settleReleases = () => { for (const release of wake.releases.splice(0)) release(); };
+  }
   if (options.noEncoder) window.AudioEncoder = undefined;
   if (options.managedMedia) {
     // Keep native MediaSource decoding; expose only the managed lifecycle flag.

@@ -121,6 +121,40 @@ test("playback remains usable without MediaSession support", { timeout: 10000 },
   assert.deepEqual(app.external, []); cleanErrors(app.errors);
 });
 
+test("a speed selected while saved audio metadata is loading survives the handoff and reload", { timeout: 15000 }, async t => {
+  const app = await openPlayer({ noEncoder: true, seconds: 4 }); t.after(app.close);
+  const { page, errors } = app;
+  await page.evaluate(() => {
+    const load = HTMLMediaElement.prototype.load;
+    let deferred = false;
+    HTMLMediaElement.prototype.load = function () {
+      if (!deferred && this.id === "audio" && typeof window.__speech.liveUrls.get(this.src) === "number") {
+        deferred = true;
+        const wav = this.src, waiting = URL.createObjectURL(new MediaSource());
+        window.__releaseMetadata = () => { this.src = wav; load.call(this); URL.revokeObjectURL(waiting); };
+        this.src = waiting;
+      }
+      return load.call(this);
+    };
+  });
+  await begin(page, PASSAGE); await reply(page); await waitStopped(page);
+  assert.equal((await audioState(page)).ready, 0, "The native recording is still waiting for metadata");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("menuitem", { name: /Speed/ }).click();
+  await page.getByRole("menuitemradio", { name: "1.5×", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector("#audio").playbackRate === 1.5);
+  assert.equal((await audioState(page)).rate, 1.5);
+  await page.evaluate(() => window.__releaseMetadata());
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+  assert.equal((await audioState(page)).rate, 1.5, "Metadata arrival must not undo a speed the user just selected");
+  await page.locator("#audio").evaluate(audio => audio.pause());
+  await waitSession(page, saved => saved.rate === 1.5);
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+  assert.equal((await audioState(page)).rate, 1.5);
+  cleanErrors(errors);
+});
+
 for (const position of [35, 40]) {
   test(`Resume keeps the ${position}s saved cursor for rewind and system controls while buffering`, { timeout: 20000 }, async t => {
     const app = await openPlayer({ seconds: 20 }); t.after(app.close);

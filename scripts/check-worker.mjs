@@ -6,14 +6,16 @@ import { MODEL, AUDIO } from '../model-config.js';
 
 const source = (await readFile(new URL('../speech-worker.js', import.meta.url), 'utf8'))
   .replace(/^import .*;\n/gm, '')
-  .replace('await import(new URL(MODEL.adapter, import.meta.url))', 'await loadAdapter()');
+  .replaceAll('import.meta.url', 'workerURL')
+  .replace('await import(adapterURL)', 'await loadAdapter(adapterURL)');
 const adapterSource = (await readFile(new URL('../models/kitten.js', import.meta.url), 'utf8'))
   .replace(/^import .*;\n/gm, '').replace('export async function createModel', 'async function createModel');
 function worker(waveform, tokenize = () => [0, 1, 0], options = {}) {
   const replies = [], loads = [], imports = [], inputs = [], events = {}, calls = [], stats = { initialized: 0, generated: 0 };
   let now = 0;
   const context = {
-    MODEL, AUDIO, Float32Array, Uint8Array, DataView, Number, onmessage: null,
+    MODEL, AUDIO, Float32Array, Uint8Array, DataView, Number, URL, onmessage: null,
+    workerURL: options.workerURL || 'https://narrate.sh/speech-worker.js?v=17',
     performance: { now: () => now },
     console: { error() {} }, // Expected rejection cases should stay quiet.
     addEventListener(type, callback) { events[type] = callback; },
@@ -27,8 +29,8 @@ function worker(waveform, tokenize = () => [0, 1, 0], options = {}) {
   };
   vm.createContext(context);
   vm.runInContext(adapterSource, context);
-  context.loadAdapter = async () => {
-    imports.push(MODEL.adapter);
+  context.loadAdapter = async url => {
+    imports.push(url.href);
     if (options.importGate) await options.importGate;
     return { createModel: options.createModel || context.createModel };
   };
@@ -50,7 +52,17 @@ assert.equal(good.imports.length, 0, 'The runtime is not imported before a gener
 await good.send(7);
 await good.send(8);
 assert.deepEqual(good.stats, { initialized: 1, generated: 2 });
-assert.deepEqual(good.imports, [MODEL.adapter], 'The selected adapter is loaded once per worker.');
+assert.deepEqual(good.imports, ['https://narrate.sh/models/kitten.js?v=1&release=17'], 'The selected adapter is loaded once per worker and deployment.');
+for (const release of ['18', '']) {
+  const deployed = worker(new Float32Array([0, .5]), undefined, {
+    workerURL: `https://narrate.sh/speech-worker.js${release ? '?v=' + release : ''}`,
+  });
+  await deployed.send(1);
+  const url = new URL(deployed.imports[0]);
+  assert.equal(url.searchParams.get('v'), '1', 'Compatibility version remains unchanged.');
+  assert.equal(url.searchParams.get('release'), release || null);
+  assert.equal(deployed.replies.at(-1).message.modelId, MODEL.id, 'Deployment cache keys do not change saved-audio compatibility.');
+}
 const base = `https://huggingface.co/${MODEL.repository}/resolve/${MODEL.revision}/`;
 assert.deepEqual(good.loads, [[
   base + MODEL.weightsFile, base + MODEL.voicesFile,

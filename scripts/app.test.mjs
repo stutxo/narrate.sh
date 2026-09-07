@@ -377,6 +377,81 @@ test("stopping while the model is loading leaves a usable empty checkpoint", { t
   cleanErrors(errors);
 });
 
+test("Stop releases every wake lock after visibility changes during a delayed acquisition", { timeout: 10000 }, async t => {
+  const app = await openApp(environment, { holdWakeLock: true }); t.after(app.close);
+  const { page, errors } = app;
+  await begin(page);
+  await page.evaluate(() => {
+    for (let index = 0; index < 2; index++) {
+      window.__wake.show("hidden"); window.__wake.show("visible");
+    }
+    window.__wake.grant();
+  });
+  await page.waitForFunction(() => window.__wake.acquired.length > 0);
+  await page.locator("#speak").click(); await waitStopped(page);
+  const locks = await page.evaluate(() => window.__wake.acquired.map(lock => lock.released));
+  assert(locks.every(Boolean), `Stopped narration must not keep the screen awake: ${JSON.stringify(locks)}`);
+  assert.equal((await session(page)).generated, 0);
+  cleanErrors(errors);
+});
+
+for (const state of ["stopped", "hidden"]) {
+  test(`a wake lock granted after narration becomes ${state} is released and can be acquired again`, { timeout: 10000 }, async t => {
+    const app = await openApp(environment, { holdWakeLock: true }); t.after(app.close);
+    const { page, errors } = app;
+    await begin(page);
+    await page.waitForFunction(() => window.__wake.pending.length > 0);
+    if (state === "stopped") { await page.locator("#speak").click(); await waitStopped(page); }
+    else await page.evaluate(() => window.__wake.show("hidden"));
+    await page.evaluate(() => window.__wake.grant());
+    await page.waitForFunction(() => window.__wake.acquired.length > 0 && window.__wake.acquired.every(lock => lock.released));
+    assert.equal((await session(page)).generated, 0);
+    if (state === "stopped") await begin(page);
+    else await page.evaluate(() => window.__wake.show("visible"));
+    await page.waitForFunction(() => window.__wake.pending.length > 0);
+    await page.evaluate(() => window.__wake.grant());
+    await page.waitForFunction(() => window.__wake.acquired.length === 2 && !window.__wake.acquired[1].released);
+    await page.locator("#speak").click(); await waitStopped(page);
+    assert.equal(await page.evaluate(() => window.__wake.acquired.every(lock => lock.released)), true);
+    cleanErrors(errors);
+  });
+}
+
+test("returning to a visible narration while a stale wake lock releases reacquires the screen lock", { timeout: 10000 }, async t => {
+  const app = await openApp(environment, { holdWakeLock: true, holdWakeRelease: true });
+  t.after(async () => { await app.page.evaluate(() => window.__wake.settleReleases()); await app.close(); });
+  const { page, errors } = app;
+  await begin(page);
+  await page.evaluate(() => { window.__wake.show("hidden"); window.__wake.grant(); });
+  await page.waitForFunction(() => window.__wake.releases.length === 1);
+  await page.evaluate(() => { window.__wake.show("visible"); window.__wake.settleReleases(); });
+  await page.waitForFunction(() => window.__wake.pending.length === 1, null, { timeout: 2000 });
+  await page.evaluate(() => window.__wake.grant());
+  await page.waitForFunction(() => window.__wake.acquired.length === 2 && !window.__wake.acquired[1].released);
+  await page.locator("#speak").click();
+  await page.waitForFunction(() => window.__wake.releases.length === 1);
+  await page.evaluate(() => window.__wake.settleReleases());
+  await waitStopped(page);
+  assert.equal(await page.evaluate(() => window.__wake.acquired.every(lock => lock.released)), true);
+  cleanErrors(errors);
+});
+
+test("returning to a visible narration retries an interrupted wake request once without looping on denial", { timeout: 10000 }, async t => {
+  const app = await openApp(environment, { holdWakeLock: true }); t.after(app.close);
+  const { page, errors } = app;
+  await begin(page);
+  await page.evaluate(() => { window.__wake.show("hidden"); window.__wake.show("visible"); window.__wake.reject(); });
+  await page.waitForFunction(() => window.__wake.pending.length === 1, null, { timeout: 2000 });
+  await page.evaluate(() => window.__wake.reject());
+  await page.waitForTimeout(50);
+  assert.equal(await page.evaluate(() => window.__wake.pending.length), 0, "An ordinary permission denial must not cause repeated wake-lock requests");
+  await page.evaluate(() => { window.__wake.show("hidden"); window.__wake.show("visible"); window.__wake.grant(); });
+  await page.waitForFunction(() => window.__wake.acquired.length === 1 && !window.__wake.acquired[0].released);
+  await page.locator("#speak").click(); await waitStopped(page);
+  assert.equal(await page.evaluate(() => window.__wake.acquired[0].released), true);
+  cleanErrors(errors);
+});
+
 test("worker failure keeps completed audio and resumes at the checkpoint", { timeout: 20000 }, async t => {
   const app = await openApp(environment);
   t.after(app.close);

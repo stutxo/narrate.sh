@@ -1,4 +1,4 @@
-import { MODEL, AUDIO } from './model-config.js?v=16';
+import { MODEL, AUDIO } from './model-config.js?v=17';
 
 let model, activeId, failure;
 
@@ -23,7 +23,11 @@ onmessage = async ({ data: { type, id, text, modelId, synthesisRate = MODEL.defa
     if (!MODEL.synthesisRates.includes(synthesisRate)) throw new Error(`Choose a synthesis rate from ${MODEL.synthesisRates.join(', ')}.`);
     if (!model) {
       const initStarted = performance.now();
-      const { createModel } = await import(new URL(MODEL.adapter, import.meta.url));
+      const adapterURL = new URL(MODEL.adapter, import.meta.url);
+      // Refresh deployed code independently of saved-audio compatibility.
+      const release = new URL(import.meta.url).searchParams.get('v');
+      if (release) adapterURL.searchParams.set('release', release);
+      const { createModel } = await import(adapterURL);
       check();
       model = await createModel({ config: MODEL, status, fail, check });
       check();

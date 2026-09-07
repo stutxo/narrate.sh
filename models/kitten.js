@@ -1,5 +1,5 @@
-import { AUDIO } from '../model-config.js?v=16';
-import { KittenTTSEngine, textToInputIds } from '../vendor/kitten/runtime.js?v=11';
+import { AUDIO } from '../model-config.js?v=17';
+import { KittenTTSEngine, textToInputIds } from '../vendor/kitten/runtime.js?v=12';
 
 // The dictionary frontend has no numeric tokens. Expand numbers before it sees
 // them, so ordinary narration ("10,000 words", "26.5 percent") keeps its numbers.

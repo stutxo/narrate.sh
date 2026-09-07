@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import originalExcitation from './fixtures/kitten-source-excitation.mjs';
 import { optimizeSourceExcitation } from './kitten-excitation.mjs';
+import { optimizeConvolutionShader } from './kitten-convolution.mjs';
 
 const revision = '35f31049363ea39464dc05d42c1135b5c9e3235f';
 const output = fileURLToPath(new URL('../vendor/kitten/', import.meta.url));
@@ -45,9 +46,19 @@ try {
   }
   await writeFile(join(source, 'src/phonemizer.ts'), phonemizer);
 
+  // Preserve each output sample's FP32 sum order while sharing weight reads
+  // across four adjacent positions. The fixture pins the exact original shader.
+  const originalConvolution = await readFile(new URL('./fixtures/kitten-conv1d.wgsl', import.meta.url), 'utf8');
+  let shaders = await readFile(join(source, 'src/shaders.ts'), 'utf8');
+  shaders = replace(shaders, originalConvolution, optimizeConvolutionShader(originalConvolution));
+  await writeFile(join(source, 'src/shaders.ts'), shaders);
+
   let engine = await readFile(join(source, 'src/engine.ts'), 'utf8');
   // Require the exact pinned fixture, then apply the offline-tested memory patch.
   engine = replace(engine, originalExcitation, optimizeSourceExcitation(originalExcitation));
+  engine = replace(engine,
+    "this.dispatchSingle('conv1d', bindGroup, Math.ceil((outChannels * outputLength) / 256));",
+    "this.dispatchSingle('conv1d', bindGroup, Math.ceil((outChannels * Math.ceil(outputLength / 4)) / 256));");
   // Cache only pinned model/voice URLs. Caching is optional: private browsing,
   // quota exhaustion, and cache eviction must never prevent generation.
   const modelCache = `async function modelBytes(url: string): Promise<ArrayBuffer> {

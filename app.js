@@ -1,6 +1,6 @@
-import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=16";
-import { setupPlayer } from "./player-controls.js?v=16";
-import { MODEL } from "./model-config.js?v=16";
+import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=17";
+import { setupPlayer } from "./player-controls.js?v=17";
+import { MODEL } from "./model-config.js?v=17";
 
 const $ = (id) => document.getElementById(id);
 const text = $("text"), button = $("speak"), status = $("status"), audio = $("audio");
@@ -10,7 +10,7 @@ const freshSession = () => ({ text: "", parts: [], generated: 0, position: 0, ra
 const modelChanged = () => session.generated > 0 && session.model !== MODEL.id;
 let session = freshSession(), database, gpuReady = false, running = false, cancelled = false;
 let worker, pending, jobId = 0, audioUrl, recordingDuration = 0, playbackRequest = 0, loadingAudio = false;
-let writes = Promise.resolve(), saveTimer, lastPositionSave = 0, wakeLock;
+let writes = Promise.resolve(), saveTimer, lastPositionSave = 0, wakeLock, wakeRequest, wakeRetry = false;
 let savedText, savedParts, savedPosition, savedRate;
 let streamConfig, streaming, playbackError, playAfterStop = false;
 let playbackWanted = false, playBlocked = false, statusMessage = status.textContent;
@@ -126,7 +126,7 @@ async function showAudio(startPlayback = false) {
     const track = new Blob([audioHeader(bytes), ...chunks.map(blob => blob.slice(44))], { type: "audio/wav" });
     const position = (audioUrl || streaming) && !loadingAudio ? audio.currentTime : current.position;
     playbackWanted = audioUrl || streaming ? playbackWanted : startPlayback;
-    const previousUrl = audioUrl, playbackRate = current.rate;
+    const previousUrl = audioUrl;
     loadingAudio = true;
     audio.pause();
     streaming?.dispose();
@@ -137,12 +137,13 @@ async function showAudio(startPlayback = false) {
     audio.onloadedmetadata = async () => {
       if (request !== playbackRequest) return;
       audio.currentTime = Math.min(position, Number.isFinite(audio.duration) ? audio.duration : position);
-      audio.playbackRate = playbackRate;
+      audio.playbackRate = current.rate;
       loadingAudio = false;
       if (playbackWanted) await playAudio();
     };
     audio.src = audioUrl;
     audio.load();
+    audio.playbackRate = current.rate;
     if (previousUrl) URL.revokeObjectURL(previousUrl);
     $("output").hidden = false;
     await save();
@@ -194,7 +195,7 @@ function closeWorker() {
 }
 function synthesize(value) {
   if (!worker) {
-    worker = new Worker("./speech-worker.js?v=16", { type: "module" });
+    worker = new Worker("./speech-worker.js?v=17", { type: "module" });
     worker.onmessage = ({ data }) => {
       if (!pending || data.id !== pending.id) return;
       if (data.type === "status") {
@@ -222,12 +223,19 @@ function synthesize(value) {
 
 async function stayAwake() {
   if (!running || document.visibilityState !== "visible" || wakeLock) return;
+  if (wakeRequest) { wakeRetry = true; return; }
   try {
-    const lock = await navigator.wakeLock?.request("screen");
-    if (!running) { await lock?.release(); return; }
+    wakeRequest = navigator.wakeLock?.request("screen");
+    const lock = await wakeRequest;
+    if (!running || document.visibilityState !== "visible") { await lock?.release(); return; }
     wakeLock = lock;
     lock?.addEventListener("release", () => { if (wakeLock === lock) wakeLock = null; });
   } catch { /* Generation also works when a screen wake lock is unavailable. */ }
+  finally {
+    wakeRequest = null;
+    // Revisit visibility changes that arrived while acquisition/release settled.
+    if (wakeRetry) { wakeRetry = false; void stayAwake(); }
+  }
 }
 async function generate() {
   // Keep an older recording playable until the user explicitly regenerates it.
@@ -310,8 +318,9 @@ async function generate() {
     }
     running = false;
     if (cancelled) say("Stopped. Your progress is saved.");
-    await wakeLock?.release().catch(() => {});
+    const lock = wakeLock;
     wakeLock = null;
+    await lock?.release().catch(() => {});
     render();
   }
 }
@@ -386,7 +395,8 @@ audio.addEventListener("pause", () => {
 });
 audio.addEventListener("seeked", savePosition);
 audio.addEventListener("ratechange", () => {
-  if (streaming) session.rate = audio.playbackRate;
+  // Track choices made while metadata loads, but ignore source teardown resets.
+  if (audioUrl || streaming) session.rate = audio.playbackRate;
   savePosition();
 });
 audio.addEventListener("error", () => { loadingAudio = false; say("The saved audio could not play."); render(); });
