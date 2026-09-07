@@ -94,6 +94,8 @@ test('opt-in app timings export a usable report without narration or audio', asy
   const report = JSON.parse(text);
   assert.equal(download.suggestedFilename(), 'narrate-timings.json');
   assert.equal(report.returnedPassages, 1);
+  assert.equal(report.hiddenAtStart, false);
+  assert.equal(report.chunks[0].sourceCharacters, privateText.length);
   assert.equal(report.outcome, 'ready');
   assert(report.firstPlaybackMs > 0);
   assert.equal(report.bufferWaitMs, 0);

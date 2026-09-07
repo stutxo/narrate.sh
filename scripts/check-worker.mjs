@@ -2,19 +2,23 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import { MODEL, AUDIO } from '../model-config.js';
 
 const source = (await readFile(new URL('../speech-worker.js', import.meta.url), 'utf8'))
-  .replace(/^import .*;\n/, '');
-function worker(waveform, tokenize = () => [0, 1, 0]) {
-  const replies = [], loads = [], events = {}, calls = [], stats = { initialized: 0, generated: 0 };
+  .replace(/^import .*;\n/gm, '')
+  .replace('await import(new URL(MODEL.adapter, import.meta.url))', 'await loadAdapter()');
+const adapterSource = (await readFile(new URL('../models/kitten.js', import.meta.url), 'utf8'))
+  .replace(/^import .*;\n/gm, '').replace('export async function createModel', 'async function createModel');
+function worker(waveform, tokenize = () => [0, 1, 0], options = {}) {
+  const replies = [], loads = [], imports = [], inputs = [], events = {}, calls = [], stats = { initialized: 0, generated: 0 };
   let now = 0;
   const context = {
-    Float32Array, Uint8Array, DataView, Number, onmessage: null,
+    MODEL, AUDIO, Float32Array, Uint8Array, DataView, Number, onmessage: null,
     performance: { now: () => now },
     console: { error() {} }, // Expected rejection cases should stay quiet.
     addEventListener(type, callback) { events[type] = callback; },
     postMessage(message, transfer = []) { replies.push({ message, transfer }); },
-    textToInputIds: async text => { now += 5; return { ids: tokenize(text) }; },
+    textToInputIds: async text => { inputs.push(text); now += 5; return { ids: tokenize(text) }; },
     KittenTTSEngine: class {
       async init() { stats.initialized++; now += 20; }
       async loadModel(...urls) { loads.push(urls); now += 30; }
@@ -22,28 +26,46 @@ function worker(waveform, tokenize = () => [0, 1, 0]) {
     },
   };
   vm.createContext(context);
+  vm.runInContext(adapterSource, context);
+  context.loadAdapter = async () => {
+    imports.push(MODEL.adapter);
+    if (options.importGate) await options.importGate;
+    return { createModel: options.createModel || context.createModel };
+  };
   vm.runInContext(source, context);
-  return { replies, loads, events, stats, calls,
-    send: (id, options = {}) => context.onmessage({ data: { type: 'generate', id, text: 'Hello world.', ...options } }),
+  return { replies, loads, imports, inputs, events, stats, calls,
+    send: (id, options = {}) => context.onmessage({ data: { type: 'generate', id, text: 'Hello world.', modelId: MODEL.id, ...options } }),
   };
 }
 
 const good = worker(new Float32Array([-2, -1, -0.5, 0, 0.5, 1, 2]));
+for (const modelId of [undefined, 'a-model-from-an-older-open-tab']) {
+  const stale = worker(new Float32Array([0, .5]));
+  await stale.send(1, { modelId });
+  assert.deepEqual(stale.imports, [], 'An old tab must not load different weights after a deployment.');
+  assert.match(stale.replies.at(-1).message.message, /model has changed.*Reload/);
+  assert(!stale.replies.some(reply => reply.message.type === 'audio'));
+}
+assert.equal(good.imports.length, 0, 'The runtime is not imported before a generation request.');
 await good.send(7);
 await good.send(8);
 assert.deepEqual(good.stats, { initialized: 1, generated: 2 });
+assert.deepEqual(good.imports, [MODEL.adapter], 'The selected adapter is loaded once per worker.');
+const base = `https://huggingface.co/${MODEL.repository}/resolve/${MODEL.revision}/`;
 assert.deepEqual(good.loads, [[
-  'https://huggingface.co/KittenML/kitten-tts-micro-0.8/resolve/1ccf72b2c2048fd17efac7de2fab32d10e225084/kitten_tts_micro_v0_8.onnx',
-  'https://huggingface.co/KittenML/kitten-tts-micro-0.8/resolve/1ccf72b2c2048fd17efac7de2fab32d10e225084/voices.npz',
+  base + MODEL.weightsFile, base + MODEL.voicesFile,
 ]]);
 const audio = good.replies.filter(reply => reply.message.type === 'audio');
 assert.deepEqual(audio.map(reply => reply.message.id), [7, 8]);
 assert.deepEqual(good.calls.map(args => args[2]), [1, 1], 'Production requests retain normal synthesis.');
+assert(good.calls.every(args => args[1] === MODEL.voice), 'The configured voice reaches the engine.');
+assert(good.replies.some(reply => reply.message.message === `Loading ${MODEL.name} (${MODEL.downloadMB} MB)…`));
 assert.deepEqual(audio.map(({ message: { metrics } }) => ({ ...metrics })), [
   { initMs: 50, generationMs: 105, totalMs: 155, audioSeconds: 7 / 24000, synthesisRate: 1 },
   { initMs: 0, generationMs: 105, totalMs: 105, audioSeconds: 7 / 24000, synthesisRate: 1 },
 ], 'Initialization is measured once; warm generation includes frontend work and contains no text.');
 for (const { message, transfer } of audio) {
+  assert.equal(message.modelId, MODEL.id, 'Returned PCM identifies the worker generation configuration.');
   assert.equal(message.sampleRate, 24000);
   assert(message.pcm instanceof Uint8Array);
   assert.equal(message.pcm.byteLength, 14);
@@ -70,6 +92,7 @@ for (const synthesisRate of [0, 2, 1.1, '1.2', null, NaN, Infinity]) {
   const bad = worker(new Float32Array([0, 0.5]));
   await bad.send(10, { synthesisRate });
   assert.equal(bad.stats.initialized, 0, 'Invalid rates must not load the model.');
+  assert.equal(bad.imports.length, 0);
   assert.equal(bad.replies.at(-1).message.type, 'error');
   assert.equal(bad.replies.at(-1).message.id, 10);
 }
@@ -91,4 +114,70 @@ for (const event of ['webgpu-device-lost', 'webgpu-error']) {
   assert.equal(lost.replies.at(-1).message.id, 8);
   assert.equal(lost.stats.generated, 1);
 }
-console.log('Worker passed: Micro reuse, synthesis rate validation/recursive propagation, phase timings, PCM16 and GPU failures.');
+
+const numbers = worker(new Float32Array([0, 0.5]));
+await numbers.send(11, { text: 'We read 10,000 words & reached 26.5%.' });
+assert.equal(numbers.inputs[0].replace(/\s+/g, ' ').trim(), 'We read ten thousand words and reached twenty six point five percent .');
+
+// A different architecture can implement the boundary without invoking Kitten.
+const replacements = [];
+const replacement = worker(undefined, undefined, { createModel: async ({ config, status }) => {
+  assert.equal(config, MODEL); status('Loading a replacement adapter…');
+  return { async generate(text, rate) {
+    replacements.push({ text, rate });
+    return { samples: new Float32Array([-.5, .5]), ...AUDIO };
+  } };
+} });
+await replacement.send(12, { text: 'Different architecture.', synthesisRate: 1.2 });
+assert.deepEqual(replacements, [{ text: 'Different architecture.', rate: 1.2 }]);
+assert.equal(replacement.stats.initialized, 0, 'Replacement adapters do not load Kitten.');
+assert.equal(replacement.replies.at(-1).message.modelId, MODEL.id);
+assert.equal(replacement.replies.at(-1).message.pcm.byteLength, 4);
+for (const format of [{ sampleRate: 48000, channels: 1 }, { sampleRate: 24000, channels: 2 }]) {
+  const invalid = worker(undefined, undefined, { createModel: async () => ({
+    generate: async () => ({ samples: new Float32Array([0, .5]), ...format }),
+  }) });
+  await invalid.send(13);
+  assert.equal(invalid.replies.at(-1).message.type, 'error');
+  assert.match(invalid.replies.at(-1).message.message, /unsupported audio format/);
+}
+
+let releaseImport;
+const delayed = worker(new Float32Array([0, .5]), undefined, {
+  importGate: new Promise(resolve => { releaseImport = resolve; }),
+});
+const pending = delayed.send(14);
+await delayed.send(15); // A competing request fails the worker during import.
+releaseImport(); await pending;
+assert.equal(delayed.stats.initialized, 0, 'A worker that failed during import must not start initialization.');
+assert(!delayed.replies.some(reply => reply.message.type === 'audio'));
+let generatedAfterFailure = 0;
+const failedInit = worker(undefined, undefined, { createModel: async ({ fail }) => {
+  fail('Initialization lost the GPU.');
+  return { generate() { generatedAfterFailure++; throw new Error('Generation must not follow failed initialization.'); } };
+} });
+await failedInit.send(16);
+assert.equal(generatedAfterFailure, 0);
+assert.equal(failedInit.replies.filter(reply => reply.message.type === 'error').length, 1);
+assert.equal(failedInit.replies.at(-1).message.message, 'Initialization lost the GPU.');
+const failedFrontend = worker(new Float32Array([0, .5]), () => {
+  failedFrontend.events['webgpu-device-lost']();
+  return [0, 1, 0];
+});
+await failedFrontend.send(17);
+assert.equal(failedFrontend.stats.generated, 0, 'GPU loss during asynchronous text preparation must not launch inference.');
+
+const configSource = await readFile(new URL('../model-config.js', import.meta.url), 'utf8');
+assert(!/^\s*import\b/m.test(configSource) && !/\bimport\s*\(/.test(configSource), 'UI model metadata cannot import a runtime.');
+assert.deepEqual(AUDIO, { sampleRate: 24000, channels: 1 });
+assert.match(MODEL.revision, /^[a-f0-9]{40}$/);
+assert(MODEL.synthesisRates.includes(MODEL.defaultRate));
+for (const [from, to] of [[MODEL.revision, '0'.repeat(40)], [MODEL.voice, 'Another voice'],
+  [MODEL.adapter, MODEL.adapter.replace('v=', 'v=next-')]]) {
+  const changed = vm.runInNewContext(configSource.replaceAll('export const ', 'const ').replace(from, to) + '\nMODEL;');
+  assert.notEqual(changed.id, MODEL.id, 'Weights, voice and adapter compatibility changes automatically change generation identity.');
+}
+const relabelled = vm.runInNewContext(configSource.replaceAll('export const ', 'const ')
+  .replace(`name: '${MODEL.name}'`, "name: 'A clearer UI label'") + '\nMODEL;');
+assert.equal(relabelled.id, MODEL.id, 'UI-only labels do not invalidate saved generation.');
+console.log('Worker passed: lazy/replaced adapters, config identity, Micro frontend/voice/reuse, canonical PCM, timings and failure races.');

@@ -4,9 +4,10 @@
   "type": "module",
   "scripts": {
     "test": "node scripts/check-worker.mjs && node --test scripts/kitten-excitation.test.mjs && npm run test:app",
-    "test:app": "node --test --test-concurrency=1 scripts/app.test.mjs scripts/stream-boundary.test.mjs scripts/diagnostics.test.mjs scripts/player.test.mjs scripts/audition.test.mjs",
+    "test:app": "node --test --test-concurrency=1 scripts/app.test.mjs scripts/stream-boundary.test.mjs scripts/diagnostics.test.mjs scripts/player.test.mjs scripts/audition.test.mjs scripts/model-upgrade.test.mjs scripts/benchmark-buffer.test.mjs",
     "test:model": "node --test scripts/model.test.mjs",
-    "audition": "node scripts/audition.mjs"
+    "audition": "node scripts/audition.mjs",
+    "benchmark:buffer": "node scripts/benchmark-buffer.mjs"
   },
   "devDependencies": {
     "playwright-core": "1.56.1"

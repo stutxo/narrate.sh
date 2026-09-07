@@ -216,6 +216,13 @@ test("Resume uses the saved recording duration while native WAV metadata is pend
   const { page, errors } = app;
   await begin(page); await reply(page); await reply(page);
   await waitSession(page, saved => saved.generated === 2);
+  // The checkpoint commits before encoding. Establish a playable 35 s cursor
+  // before delaying WAV metadata; otherwise the browser clamps it to 20 s.
+  await page.waitForFunction(() => {
+    const audio = document.querySelector("#audio");
+    return audio.duration >= 40 && Array.from({ length: audio.buffered.length }, (_, index) =>
+      audio.buffered.start(index) <= 35 && audio.buffered.end(index) > 35).some(Boolean);
+  });
   await page.locator("#audio").evaluate(audio => { audio.pause(); audio.currentTime = 35; });
   await waitSession(page, saved => saved.position === 35);
   await page.evaluate(() => {

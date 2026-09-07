@@ -594,13 +594,18 @@ test("Stop during saved audio preload preserves the whole track, position and sp
   await page.evaluate(() => { window.__speech.holdPCMReads = true; });
   await page.locator("#speak").click();
   await page.waitForFunction(() => window.__speech.readBlocked);
+  assert.equal(await page.evaluate(() => window.__speech.requests.length), requests + 1,
+    "The first unfinished passage starts while saved PCM preload is still blocked");
+  await reply(page);
+  assert.equal((await session(page)).generated, 2, "A prepared result stays uncommitted until preload completes");
   await page.locator("#speak").click(); await waitStopped(page);
   await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
   const stopped = await audioState(page), saved = await session(page);
   assert.equal(stopped.duration, 2.4); assert.equal(stopped.paused, true); assert.equal(stopped.rate, 1.5);
   assert(Math.abs(stopped.time - 1.35) < .05);
   assert.equal(saved.generated, 2); assert.deepEqual(saved.audioKeys, [0, 1]);
-  assert.equal(await page.evaluate(() => window.__speech.requests.length), requests, "Cancelling preload does not restart synthesis");
+  assert.equal(await page.evaluate(() => window.__speech.requests.length), requests + 1,
+    "Cancelling preload discards its one prepared result and starts no further inference");
   await page.evaluate(() => { window.__speech.holdPCMReads = false; window.__speech.releaseRead(); });
   await page.waitForTimeout(50);
   assert.equal((await audioState(page)).src, stopped.src, "Late preload completion cannot replace the restored track");

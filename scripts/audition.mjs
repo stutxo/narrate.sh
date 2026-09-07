@@ -4,15 +4,16 @@ import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { startBrowser } from './app-fixtures.mjs';
 import { auditionPlan } from './audition-utils.js';
+import { MODEL } from '../model-config.js';
 
 const help = `Usage: node scripts/audition.mjs [options]
   --corpus standard|smoke|prose,numbers,question (default: standard)
   --text "A custom passage, up to 500 characters."
-  --rates 1,1.2,1.5  --repeats 3  --pace 1.5  --seed 42
+  --rates ${MODEL.synthesisRates.join(',')}  --repeats 3  --pace 1.5  --seed 42
   --out DIRECTORY   --timeout SECONDS (default: 1800)
   --software-gpu    Explicit SwiftShader opt-in: correctness only, not a phone benchmark.
 Set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH if Chromium is not installed by Playwright.
-Downloads about 45 MB, warms each rate, then writes report.json, raw WAVs, and review.html.
+Downloads about ${MODEL.downloadMB} MB for ${MODEL.name}, warms each rate, then writes report.json, raw WAVs, and review.html.
 Open review.html to listen at matched pace; raw WAV files alone play at their natural rate.`;
 
 function parse(args) {
@@ -36,10 +37,12 @@ function parse(args) {
 function reviewHtml(report) {
   const data = JSON.stringify(report).replaceAll('<', '\\u003c');
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Micro listening review</title><style>body{font:16px/1.5 system-ui;max-width:760px;margin:2rem auto;padding:0 1rem}audio{width:100%}article{border-top:1px solid #ccc;margin-top:1rem}pre{white-space:pre-wrap;overflow-wrap:anywhere}[hidden]{display:none}</style>
-<h1>Micro listening review</h1><p>Listen to A/B/C at the same nominal pace. Check words, numbers, pronunciation, pauses and fatigue. Signal checks are not quality scores. Raw WAV files opened separately need the recorded playback rate.</p>
+<title>Speech listening review</title><style>body{font:16px/1.5 system-ui;max-width:760px;margin:2rem auto;padding:0 1rem}audio{width:100%}article{border-top:1px solid #ccc;margin-top:1rem}pre{white-space:pre-wrap;overflow-wrap:anywhere}[hidden]{display:none}</style>
+<h1>Speech listening review</h1><p>Listen to the candidates at the same nominal pace. Check words, numbers, pronunciation, pauses and fatigue. Signal checks are not quality scores. Raw WAV files opened separately need the recorded playback rate.</p>
 <p id="environment"></p><button id="reveal">Reveal rates and timings</button><main></main><script>
 const report=${data};
+document.title=report.model.name+' listening review';
+document.querySelector('h1').textContent=document.title;
 document.querySelector('#environment').textContent=report.environment.softwareGpu?'Software GPU run: correctness only, not phone performance.':'Browser GPU run: results apply only to this machine and test.';
 for(const row of report.results){
  const card=document.createElement('article'),heading=document.createElement('h2'),text=document.createElement('p'),audio=document.createElement('audio'),detail=document.createElement('pre');

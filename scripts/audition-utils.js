@@ -1,3 +1,5 @@
+import { MODEL } from '../model-config.js?v=12';
+
 export const passages = {
   prose: 'The quiet garden filled with birdsong as the morning sun warmed the trees.',
   numbers: 'We sold 24 tickets, raised 1,250 dollars, and reached 26.5 percent of our goal.',
@@ -6,10 +8,12 @@ export const passages = {
 };
 
 export function auditionPlan(options = {}) {
-  const rates = options.rates ?? [1, 1.2, 1.5], repeats = options.repeats ?? 3;
+  const rates = options.rates ?? MODEL.synthesisRates, repeats = options.repeats ?? 3;
   const targetRate = options.targetRate ?? 1.5, seed = options.seed ?? Date.now() >>> 0;
   if (!Array.isArray(rates) || !rates.length || new Set(rates).size !== rates.length
-    || rates.some(rate => ![1, 1.2, 1.5].includes(rate))) throw new Error('Rates must be unique values from 1, 1.2, 1.5.');
+    || rates.some(rate => !Number.isFinite(rate) || rate <= 0 || !MODEL.synthesisRates.includes(rate))) {
+    throw new Error(`Rates must be unique values from ${MODEL.synthesisRates.join(', ')}.`);
+  }
   if (!Number.isInteger(repeats) || repeats < 1 || repeats > 6) throw new Error('Choose 1–6 repeats.');
   if (!Number.isFinite(targetRate) || targetRate < 0.5 || targetRate > 2) throw new Error('Target listening pace must be 0.5–2.');
   if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) throw new Error('Seed must be an unsigned 32-bit integer.');

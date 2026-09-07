@@ -131,7 +131,7 @@ function installControls(options) {
       const pcm = new Uint8Array(Math.round(controls.seconds * 24000) * 2), view = new DataView(pcm.buffer);
       for (let i = 0; i < pcm.byteLength / 2; i++) view.setInt16(i * 2, Math.round(Math.sin(i * 2 * Math.PI * 220 / 24000) * 3000), true);
       controls.completed.push(job.message.text);
-      job.worker.onmessage?.({ data: { type: "audio", id: job.message.id, pcm, sampleRate: 24000 } });
+      job.worker.onmessage?.({ data: { type: "audio", id: job.message.id, pcm, sampleRate: 24000, modelId: job.message.modelId } });
     }
     return true;
   };

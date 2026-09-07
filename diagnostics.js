@@ -85,13 +85,13 @@ export function setupDiagnostics(audio) {
     },
     start({ passages, resumedPassages, playbackRate }) {
       waiting = probe = null;
-      run = { started: now(), recordedAt: new Date().toISOString(), passages, resumedPassages, playbackRate,
+      run = { started: now(), recordedAt: new Date().toISOString(), hiddenAtStart: document.hidden, passages, resumedPassages, playbackRate,
         firstPlayingEventMs: null, firstPlaybackMs: null, generationFinishedMs: null, outcome: 'generating',
         returnedPassages: 0, initMs: 0, generationMs: 0, audioSeconds: 0,
         bufferWaitMs: 0, chunks: [], waits: [], events: [], omittedRecords: 0 };
       render();
     },
-    chunk({ id, pcm, sampleRate, metrics }, requestMs) {
+    chunk({ id, pcm, sampleRate, metrics }, requestMs, sourceCharacters) {
       if (!run) return;
       const audioSeconds = pcm.byteLength / (2 * sampleRate);
       run.returnedPassages++;
@@ -99,7 +99,8 @@ export function setupDiagnostics(audio) {
       run.audioSeconds += audioSeconds;
       run.initMs += metrics?.initMs || 0;
       run.generationMs += metrics?.generationMs || 0;
-      bounded(run.chunks, { id, atMs: elapsed(), audioSeconds: round(audioSeconds),
+      bounded(run.chunks, { id, atMs: elapsed(), audioSeconds,
+        sourceCharacters,
         synthesisRate: metrics?.synthesisRate ?? 1, requestMs: round(requestMs),
         timings: metrics ? { initMs: round(metrics.initMs), generationMs: round(metrics.generationMs), totalMs: round(metrics.totalMs) } : null });
       render();

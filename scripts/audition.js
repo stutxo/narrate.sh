@@ -1,6 +1,10 @@
-import { auditionPlan, pcmStats, wavBytes } from './audition-utils.js?v=11';
+import { auditionPlan, pcmStats, wavBytes } from './audition-utils.js?v=12';
+import { MODEL } from '../model-config.js?v=12';
 
 const $ = id => document.getElementById(id);
+document.title = `${MODEL.name} audition`;
+$('title').textContent = document.title;
+$('description').textContent = `Runs locally with WebGPU. The model downloads about ${MODEL.downloadMB} MB on first use. Each candidate gets a short warmup excluded from comparisons. Repeats rotate the order; a single repeat is exploratory. Signal checks are not speech-quality scores.`;
 let worker, pending, wake, serial = 0, running = false, revealed = false;
 const artifacts = [], urls = [];
 function status(text) { $('status').textContent = text; }
@@ -33,7 +37,7 @@ function generate(text, synthesisRate, label) {
   status(label);
   return new Promise((resolve, reject) => {
     pending = { resolve, reject, label, id: ++serial };
-    worker.postMessage({ type: 'generate', id: serial, text, synthesisRate });
+    worker.postMessage({ type: 'generate', id: serial, text, synthesisRate, modelId: MODEL.id });
   });
 }
 function download(bytes, filename, type) {
@@ -68,6 +72,7 @@ async function run(options = {}) {
   urls.splice(0).forEach(url => URL.revokeObjectURL(url)); artifacts.length = 0; $('results').replaceChildren();
   const report = window.audition.report = {
     version: 1, createdAt: new Date().toISOString(), userAgent: navigator.userAgent,
+    model: { id: MODEL.id, name: MODEL.name, voice: MODEL.voice },
     isolated: crossOriginIsolated, backgrounded: document.visibilityState !== 'visible',
     seed: plan.seed, targetRate: plan.targetRate, repeats: plan.repeats,
     corpus: plan.corpus, warmups: [], results: [],
@@ -83,14 +88,16 @@ async function run(options = {}) {
   holdScreen();
   try {
     if (!navigator.gpu) throw new Error('This browser does not expose WebGPU.');
-    worker = new Worker(new URL('../speech-worker.js?v=11', import.meta.url), { type: 'module' });
+    worker = new Worker(new URL('../speech-worker.js?v=12', import.meta.url), { type: 'module' });
     worker.onerror = event => pending?.reject(new Error(event.message || 'The speech worker failed.'));
     worker.onmessage = ({ data }) => {
       if (!pending || data.id !== pending.id) return;
       if (data.type === 'status') status(`${pending.label} ${data.message}`);
       if (data.type === 'audio' || data.type === 'error') {
         const job = pending; pending = undefined;
-        if (data.type === 'error') job.reject(new Error(data.message)); else job.resolve(data);
+        if (data.type === 'error') job.reject(new Error(data.message));
+        else if (data.modelId !== MODEL.id) job.reject(new Error('The speech model has changed. Reload this page to continue.'));
+        else job.resolve(data);
       }
     };
     for (const candidate of plan.candidates) {

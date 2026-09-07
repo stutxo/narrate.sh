@@ -24,7 +24,8 @@ jobs:
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         run: |
           mkdir -p _site/scripts
-          cp index.html favicon.svg app.js speech-worker.js streaming-player.js player-controls.js diagnostics.js _site/
+          cp index.html favicon.svg app.js model-config.js speech-worker.js streaming-player.js player-controls.js diagnostics.js _site/
+          cp -R models _site/
           cp -R vendor _site/
           cp scripts/check-playback.html scripts/audition.html scripts/audition.js scripts/audition-utils.js _site/scripts/
       - name: Upload the tested site

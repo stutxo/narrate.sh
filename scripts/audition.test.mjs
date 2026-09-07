@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { auditionPlan, pcmStats, wavBytes } from './audition-utils.js';
 import { startBrowser } from './app-fixtures.mjs';
+import { MODEL } from '../model-config.js';
 
 test('audition plans keep blinded labels stable and balance comparison order', () => {
   const plan = auditionPlan({ seed: 7 });
@@ -103,6 +105,7 @@ function installSpeech() {
         }
         const initMs = this.calls === 1 ? 2000 : 0;
         this.onmessage?.({ data: { type: 'audio', id: message.id, pcm, sampleRate: 24000,
+          modelId: controls.mode === 'old-worker' ? undefined : message.modelId,
           metrics: controls.mode === 'protocol' ? undefined : { initMs, generationMs: 100, totalMs: initMs + 120,
             audioSeconds: samples / 24000, synthesisRate: message.synthesisRate } } });
       });
@@ -111,12 +114,15 @@ function installSpeech() {
   };
 }
 
-async function openAudition(t) {
+async function openAudition(t, configSource) {
   const environment = await startBrowser();
   t.after(() => environment.close());
   const page = await environment.browser.newPage(), errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(installSpeech);
+  if (configSource) await page.route('**/model-config.js*', route => route.fulfill({
+    contentType: 'application/javascript', body: configSource,
+  }));
   await page.goto(environment.url + '/scripts/audition.html');
   await page.waitForFunction(() => window.audition);
   return { page, errors };
@@ -124,10 +130,27 @@ async function openAudition(t) {
 
 const quickPlan = { corpus: 'smoke', repeats: 1, seed: 7 };
 
+test('auditions follow the configured model and its supported rates', { timeout: 20000 }, async t => {
+  const config = (await readFile(new URL('../model-config.js', import.meta.url), 'utf8'))
+    .replace(/name: '[^']*'/, "name: 'Future voice'")
+    .replace('synthesisRates: Object.freeze([1, 1.2, 1.5])', 'synthesisRates: Object.freeze([1])');
+  const { page, errors } = await openAudition(t, config);
+  const report = await page.evaluate(options => window.audition.run(options), quickPlan);
+  assert.equal(await page.title(), 'Future voice audition');
+  assert.equal(report.model.name, 'Future voice');
+  assert.equal(report.warmups.length, 1); assert.equal(report.results.length, 1);
+  assert.equal(report.results[0].synthesisRate, 1);
+  assert.equal(await page.evaluate(() => window.__auditionTest.requests.length), 2);
+  assert.deepEqual(errors, []);
+});
+
 test('the browser audition excludes warmups and plays native WAVs at matched nominal pace', { timeout: 20000 }, async t => {
   const { page, errors } = await openAudition(t);
   const report = await page.evaluate(options => window.audition.run(options), quickPlan);
   assert.equal(report.warmups.length, 3); assert.equal(report.results.length, 3);
+  assert.deepEqual(report.model, { id: MODEL.id, name: MODEL.name, voice: MODEL.voice });
+  assert(await page.evaluate(id => window.__auditionTest.requests.every(request => request.modelId === id), report.model.id));
+  assert.equal(await page.title(), `${MODEL.name} audition`);
   assert.equal(report.backgrounded, false);
   assert.equal(await page.evaluate(() => window.__auditionTest.wakeRequests), 1);
   assert(await page.evaluate(() => window.__auditionTest.wakeLocks.every(lock => lock.released)), 'Completion releases the screen.');
@@ -211,6 +234,11 @@ test('Stop and worker failures remain failures, and rerunning releases prior aud
   }, quickPlan);
   assert.match(protocolFailure, /worker protocol/i);
   assert(await page.evaluate(() => window.__auditionTest.wakeLocks.every(lock => lock.released)), 'Malformed responses also release the screen.');
+  const oldWorker = await page.evaluate(async options => {
+    window.__auditionTest.mode = 'old-worker';
+    try { await window.audition.run(options); return 'success'; } catch (error) { return error.message; }
+  }, quickPlan);
+  assert.match(oldWorker, /model has changed.*Reload/);
   const silence = await page.evaluate(async options => {
     window.__auditionTest.mode = 'silence';
     try { await window.audition.run(options); return 'success'; } catch (error) { return error.message; }
