@@ -1,12 +1,12 @@
-import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=12";
-import { setupPlayer } from "./player-controls.js?v=12";
-import { MODEL } from "./model-config.js?v=12";
+import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=13";
+import { setupPlayer } from "./player-controls.js?v=13";
+import { MODEL } from "./model-config.js?v=13";
 
 const $ = (id) => document.getElementById(id);
 const text = $("text"), button = $("speak"), status = $("status"), audio = $("audio");
 document.querySelector('.lede').textContent = `Paste text, hear it read aloud by ${MODEL.name}, locally in your browser with WebGPU.`;
 $("model-name").textContent = `${MODEL.name} · WebGPU`;
-const freshSession = () => ({ text: "", parts: [], generated: 0, position: 0, rate: 1.5, model: MODEL.id });
+const freshSession = () => ({ text: "", parts: [], generated: 0, position: 0, rate: 1, model: MODEL.id });
 const modelChanged = () => session.generated > 0 && session.model !== MODEL.id;
 let session = freshSession(), database, gpuReady = false, running = false, cancelled = false;
 let worker, pending, jobId = 0, audioUrl, recordingDuration = 0, playbackRequest = 0, loadingAudio = false;
@@ -16,7 +16,7 @@ let streamConfig, streaming, playbackError, playAfterStop = false;
 let playbackWanted = false, playBlocked = false, statusMessage = status.textContent;
 let replacingSession = false;
 const diagnostics = new URLSearchParams(location.search).get('diagnostics') === '1'
-  ? (await import('./diagnostics.js?v=12')).setupDiagnostics(audio) : null;
+  ? (await import('./diagnostics.js?v=13')).setupDiagnostics(audio) : null;
 
 function say(message = statusMessage) {
   statusMessage = message;
@@ -196,7 +196,7 @@ function closeWorker() {
 }
 function synthesize(value) {
   if (!worker) {
-    worker = new Worker("./speech-worker.js?v=12", { type: "module" });
+    worker = new Worker("./speech-worker.js?v=13", { type: "module" });
     worker.onmessage = ({ data }) => {
       if (!pending || data.id !== pending.id) return;
       if (data.type === "status") {

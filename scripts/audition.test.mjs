@@ -8,6 +8,7 @@ import { MODEL } from '../model-config.js';
 test('audition plans keep blinded labels stable and balance comparison order', () => {
   const plan = auditionPlan({ seed: 7 });
   assert.deepEqual(plan, auditionPlan({ seed: 7 }));
+  assert.equal(plan.targetRate, 1, 'Comparisons default to normal listening pace.');
   assert.equal(plan.jobs.length, 27);
   assert.deepEqual(plan.candidates.map(candidate => candidate.synthesisRate).sort(), [1, 1.2, 1.5]);
   assert(new Set(Array.from({ length: 12 }, (_, seed) => JSON.stringify(auditionPlan({ seed }).candidates))).size > 1);
@@ -19,7 +20,7 @@ test('audition plans keep blinded labels stable and balance comparison order', (
       assert.equal(jobs.find(job => job.label === candidate.label).synthesisRate, candidate.synthesisRate);
     }
     assert.equal(new Set(positions).size, 3, 'Every candidate occupies each timing position for each passage.');
-    assert(Math.abs(candidate.synthesisRate * (plan.targetRate / candidate.synthesisRate) - 1.5) < 1e-12);
+    assert(Math.abs(candidate.synthesisRate * (plan.targetRate / candidate.synthesisRate) - 1) < 1e-12);
   }
   for (const options of [{ rates: [] }, { rates: [1, 1] }, { rates: [1, 2] }, { rates: ['1'] },
     { repeats: 0 }, { repeats: 7 }, { targetRate: NaN }, { seed: -1 }, { seed: 2 ** 32 },
@@ -135,7 +136,9 @@ test('auditions follow the configured model and its supported rates', { timeout:
     .replace(/name: '[^']*'/, "name: 'Future voice'")
     .replace('synthesisRates: Object.freeze([1, 1.2, 1.5])', 'synthesisRates: Object.freeze([1])');
   const { page, errors } = await openAudition(t, config);
+  assert.equal(await page.locator('#pace').inputValue(), '1');
   const report = await page.evaluate(options => window.audition.run(options), quickPlan);
+  assert.equal(report.targetRate, 1);
   assert.equal(await page.title(), 'Future voice audition');
   assert.equal(report.model.name, 'Future voice');
   assert.equal(report.warmups.length, 1); assert.equal(report.results.length, 1);
@@ -146,7 +149,7 @@ test('auditions follow the configured model and its supported rates', { timeout:
 
 test('the browser audition excludes warmups and plays native WAVs at matched nominal pace', { timeout: 20000 }, async t => {
   const { page, errors } = await openAudition(t);
-  const report = await page.evaluate(options => window.audition.run(options), quickPlan);
+  const report = await page.evaluate(options => window.audition.run(options), { ...quickPlan, targetRate: 1.5 });
   assert.equal(report.warmups.length, 3); assert.equal(report.results.length, 3);
   assert.deepEqual(report.model, { id: MODEL.id, name: MODEL.name, voice: MODEL.voice });
   assert(await page.evaluate(id => window.__auditionTest.requests.every(request => request.modelId === id), report.model.id));

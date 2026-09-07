@@ -164,7 +164,7 @@ for (const position of [35, 40]) {
     await page.evaluate(() => window.__system.actions.pause());
     const paused = await audioState(page);
     await page.locator("#speak").click(); await waitStopped(page);
-    await waitSession(page, saved => Math.abs(saved.position - paused.time) < .05 && saved.rate === 1.5);
+    await waitSession(page, saved => Math.abs(saved.position - paused.time) < .05 && saved.rate === 1);
     assert.equal((await audioState(page)).paused, true);
     cleanErrors(errors);
   });

@@ -1,0 +1,192 @@
+{
+  "model": {
+    "name": "Pocket TTS (FP32 experiment)",
+    "adapter": "./scripts/models/pocket.js?v=1",
+    "repository": "ekzhang/jax-js-models",
+    "revision": "2b0fc51b4f76ff56611741ab9267593decde7639",
+    "weightsFile": "kyutai-pocket-tts_b6369a24-fp16.safetensors",
+    "weightsBytes": 235738516,
+    "weightsSha256": "792e653ea1604197bf6bd2a76ac355f5ec41ef88961bf1dbf729d027d6e20f6c",
+    "voiceRepository": "kyutai/pocket-tts-without-voice-cloning",
+    "voiceRevision": "fbf82802feb1f92664f3bcf6a0f01295a678853c",
+    "voicesFile": "embeddings/alba.safetensors",
+    "tokenizerFile": "tokenizer.model",
+    "voice": "alba",
+    "sourceRevision": "970fa22d934ce2e617cd3a993c6ecc8b736496f2",
+    "tokenLimit": 256,
+    "downloadMB": 237,
+    "synthesisRates": [
+      1
+    ],
+    "defaultRate": 1,
+    "dtype": "float32",
+    "seed": 42,
+    "caution": "Explicit WebGPU FP32 experiment using the same older browser checkpoint, about 237 MB to download. Uses more GPU memory and may be slower than FP16. Requires Float16Array to load its weights. No WASM fallback; not an iPhone benchmark.",
+    "id": "./scripts/models/pocket.js?v=1|ekzhang/jax-js-models|2b0fc51b4f76ff56611741ab9267593decde7639|kyutai-pocket-tts_b6369a24-fp16.safetensors|kyutai/pocket-tts-without-voice-cloning|fbf82802feb1f92664f3bcf6a0f01295a678853c|embeddings/alba.safetensors|tokenizer.model|970fa22d934ce2e617cd3a993c6ecc8b736496f2|alba|1|float32|42"
+  },
+  "gpu": {
+    "vendor": "google",
+    "architecture": "swiftshader",
+    "description": "",
+    "features": [
+      "depth32float-stencil8",
+      "rg11b10ufloat-renderable",
+      "bgra8unorm-storage",
+      "texture-compression-bc",
+      "core-features-and-limits",
+      "chromium-experimental-sampling-resource-table",
+      "chromium-experimental-timestamp-query-inside-passes",
+      "float32-filterable",
+      "indirect-first-instance",
+      "texture-compression-astc-sliced-3d",
+      "float32-blendable",
+      "subgroup-size-control",
+      "texture-compression-unaligned",
+      "texture-compression-astc",
+      "texture-compression-etc2",
+      "depth-clip-control",
+      "texture-compression-bc-sliced-3d",
+      "timestamp-query",
+      "clip-distances",
+      "texture-component-swizzle",
+      "subgroups"
+    ]
+  },
+  "softwareGpu": true,
+  "runs": [
+    {
+      "id": 0,
+      "passage": "smoke",
+      "text": "Hello world.",
+      "warmup": true,
+      "synthesisRate": 1,
+      "playbackRate": 1,
+      "metrics": {
+        "initMs": 16222.289999961853,
+        "generationMs": 33035.40000003576,
+        "totalMs": 49258.67000001669,
+        "audioSeconds": 0.96,
+        "synthesisRate": 1
+      },
+      "rms": 0.10184560848229003,
+      "peak": 0.655517578125,
+      "stats": {
+        "samples": 23040,
+        "rms": 0.10184560848229003,
+        "peak": 0.655517578125,
+        "nearZeroFraction": 0.18172743055555557,
+        "atLimitFraction": 0,
+        "quietEdges": {
+          "thresholdDbfs": -60,
+          "windowMs": 10,
+          "leadingSeconds": 0,
+          "trailingSeconds": 0.14,
+          "allQuiet": false
+        },
+        "warnings": []
+      },
+      "file": "pocket-f32-smoke.wav"
+    },
+    {
+      "id": 1,
+      "passage": "prose",
+      "text": "The quiet garden filled with birdsong as the morning sun warmed the trees.",
+      "warmup": false,
+      "synthesisRate": 1,
+      "playbackRate": 1,
+      "metrics": {
+        "initMs": 0,
+        "generationMs": 14352.449999988079,
+        "totalMs": 14354.659999966621,
+        "audioSeconds": 4.88,
+        "synthesisRate": 1
+      },
+      "rms": 0.11515743527199729,
+      "peak": 0.781951904296875,
+      "stats": {
+        "samples": 117120,
+        "rms": 0.11515743527199729,
+        "peak": 0.781951904296875,
+        "nearZeroFraction": 0.16661543715846994,
+        "atLimitFraction": 0,
+        "quietEdges": {
+          "thresholdDbfs": -60,
+          "windowMs": 10,
+          "leadingSeconds": 0,
+          "trailingSeconds": 0.07,
+          "allQuiet": false
+        },
+        "warnings": []
+      },
+      "file": "pocket-f32-prose.wav"
+    },
+    {
+      "id": 2,
+      "passage": "numbers",
+      "text": "We sold 24 tickets, raised 1,250 dollars, and reached 26.5 percent of our goal.",
+      "warmup": false,
+      "synthesisRate": 1,
+      "playbackRate": 1,
+      "metrics": {
+        "initMs": 0,
+        "generationMs": 20367.910000026226,
+        "totalMs": 20370.115000009537,
+        "audioSeconds": 6.48,
+        "synthesisRate": 1
+      },
+      "rms": 0.12011039323846504,
+      "peak": 0.587982177734375,
+      "stats": {
+        "samples": 155520,
+        "rms": 0.12011039323846504,
+        "peak": 0.587982177734375,
+        "nearZeroFraction": 0.14043852880658436,
+        "atLimitFraction": 0,
+        "quietEdges": {
+          "thresholdDbfs": -60,
+          "windowMs": 10,
+          "leadingSeconds": 0,
+          "trailingSeconds": 0.11,
+          "allQuiet": false
+        },
+        "warnings": []
+      },
+      "file": "pocket-f32-numbers.wav"
+    },
+    {
+      "id": 3,
+      "passage": "question",
+      "text": "Where did you leave the keys? Are we still meeting at the station?",
+      "warmup": false,
+      "synthesisRate": 1,
+      "playbackRate": 1,
+      "metrics": {
+        "initMs": 0,
+        "generationMs": 10195.310000002384,
+        "totalMs": 10195.995000004768,
+        "audioSeconds": 3.28,
+        "synthesisRate": 1
+      },
+      "rms": 0.12706471760794255,
+      "peak": 0.608123779296875,
+      "stats": {
+        "samples": 78720,
+        "rms": 0.12706471760794255,
+        "peak": 0.608123779296875,
+        "nearZeroFraction": 0.15021595528455284,
+        "atLimitFraction": 0,
+        "quietEdges": {
+          "thresholdDbfs": -60,
+          "windowMs": 10,
+          "leadingSeconds": 0,
+          "trailingSeconds": 0.03,
+          "allQuiet": false
+        },
+        "warnings": []
+      },
+      "file": "pocket-f32-question.wav"
+    }
+  ],
+  "browser": "152.0.7977.75",
+  "errors": []
+}

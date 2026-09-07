@@ -1,0 +1,162 @@
+{
+  "createdAt": "2026-09-07T16:27:09.660Z",
+  "label": "Chromium152 SwiftShader WebGPU correctness run, not iPhone performance or listening-quality approval",
+  "model": {
+    "key": "inflect",
+    "name": "Inflect Micro v2",
+    "adapter": "./scripts/models/inflect.js?v=1",
+    "repository": "owensong/Inflect-Micro-v2-ONNX",
+    "revision": "91b1ab6432323064ec0e8e9704d92fcecd24855f",
+    "weightsFiles": [
+      "onnx/duration.onnx",
+      "onnx/decode.onnx"
+    ],
+    "runtime": "onnxruntime-web@1.27.0/native-webgpu",
+    "frontend": "geronimi73/inflect-tts@aa51b786f947635cfa1ebdea3ea160e4bca7136f/phonemizer@1.2.1/n2words@5.1.2",
+    "voice": "Default male",
+    "defaultRate": 1,
+    "synthesisRates": [
+      1,
+      1.2,
+      1.5
+    ],
+    "downloadMB": 38,
+    "seed": 7,
+    "variation": 0.667,
+    "caution": "Experimental WebGPU neural inference with CPU shape/mask bookkeeping. Upstream reports Safari on iPhone can crash during repeated inference. About 38 MB of weights plus 26 MB of runtime/frontend assets.",
+    "id": "./scripts/models/inflect.js?v=1|owensong/Inflect-Micro-v2-ONNX|91b1ab6432323064ec0e8e9704d92fcecd24855f|onnx/duration.onnx|onnx/decode.onnx|onnxruntime-web@1.27.0/native-webgpu|geronimi73/inflect-tts@aa51b786f947635cfa1ebdea3ea160e4bca7136f/phonemizer@1.2.1/n2words@5.1.2|Default male|1|7|0.667"
+  },
+  "playbackRate": 1,
+  "results": [
+    {
+      "passage": "smoke",
+      "warmup": true,
+      "metrics": {
+        "initMs": 8422.5,
+        "generationMs": 46345.30000001192,
+        "totalMs": 54768.90000003576,
+        "audioSeconds": 1.0453333333333332,
+        "synthesisRate": 1
+      },
+      "wallMs": 54791.210769000005,
+      "signal": {
+        "samples": 25088,
+        "rms": 0.07722614807163934,
+        "peak": 0.569305419921875,
+        "nearZeroFraction": 0.34462691326530615,
+        "atLimitFraction": 0,
+        "quietEdges": {
+          "thresholdDbfs": -60,
+          "windowMs": 10,
+          "leadingSeconds": 0.27,
+          "trailingSeconds": 0.04533333333333334,
+          "allQuiet": false
+        },
+        "warnings": []
+      },
+      "file": "smoke.wav"
+    },
+    {
+      "passage": "prose",
+      "warmup": false,
+      "metrics": {
+        "initMs": 0,
+        "generationMs": 50673.69999998808,
+        "totalMs": 50675.89999997616,
+        "audioSeconds": 4,
+        "synthesisRate": 1
+      },
+      "wallMs": 50685.947698,
+      "signal": {
+        "samples": 96000,
+        "rms": 0.06522677988927839,
+        "peak": 0.4892578125,
+        "nearZeroFraction": 0.15265625,
+        "atLimitFraction": 0,
+        "quietEdges": {
+          "thresholdDbfs": -60,
+          "windowMs": 10,
+          "leadingSeconds": 0.27,
+          "trailingSeconds": 0.05,
+          "allQuiet": false
+        },
+        "warnings": []
+      },
+      "file": "prose.wav"
+    },
+    {
+      "passage": "numbers",
+      "warmup": false,
+      "metrics": {
+        "initMs": 0,
+        "generationMs": 76681,
+        "totalMs": 76682.5,
+        "audioSeconds": 7.701333333333333,
+        "synthesisRate": 1
+      },
+      "wallMs": 76700.02489999999,
+      "signal": {
+        "samples": 184832,
+        "rms": 0.06361501566078633,
+        "peak": 0.571746826171875,
+        "nearZeroFraction": 0.17565140235457063,
+        "atLimitFraction": 0,
+        "quietEdges": {
+          "thresholdDbfs": -60,
+          "windowMs": 10,
+          "leadingSeconds": 0.21,
+          "trailingSeconds": 0.04133333333333333,
+          "allQuiet": false
+        },
+        "warnings": []
+      },
+      "file": "numbers.wav"
+    },
+    {
+      "passage": "question",
+      "warmup": false,
+      "metrics": {
+        "initMs": 0,
+        "generationMs": 38430.10000002384,
+        "totalMs": 38431.69999998808,
+        "audioSeconds": 3.9066666666666667,
+        "synthesisRate": 1
+      },
+      "wallMs": 38440.59163800001,
+      "signal": {
+        "samples": 93760,
+        "rms": 0.06358549269426997,
+        "peak": 0.591766357421875,
+        "nearZeroFraction": 0.28252986348122866,
+        "atLimitFraction": 0,
+        "quietEdges": {
+          "thresholdDbfs": -60,
+          "windowMs": 10,
+          "leadingSeconds": 0.21,
+          "trailingSeconds": 0.02666666666666667,
+          "allQuiet": false
+        },
+        "warnings": []
+      },
+      "file": "question.wav"
+    }
+  ],
+  "browserErrors": [
+    "\u001b[0;93m2026-09-07 16:27:14.277299 [W:onnxruntime:, session_state.cc:1367 VerifyEachNodeIsAssignedToAnEp] Some nodes were not assigned to the preferred execution providers which may or may not have an negative impact on performance. e.g. ORT explicitly assigns shape related ops to CPU to improve perf.\u001b[m",
+    "\u001b[0;93m2026-09-07 16:27:14.278999 [W:onnxruntime:, session_state.cc:1369 VerifyEachNodeIsAssignedToAnEp] Rerunning with verbose output on a non-minimal build will show node assignments.\u001b[m",
+    "\u001b[0;93m2026-09-07 16:27:18.275799 [W:onnxruntime:, session_state.cc:1367 VerifyEachNodeIsAssignedToAnEp] Some nodes were not assigned to the preferred execution providers which may or may not have an negative impact on performance. e.g. ORT explicitly assigns shape related ops to CPU to improve perf.\u001b[m",
+    "\u001b[0;93m2026-09-07 16:27:18.276199 [W:onnxruntime:, session_state.cc:1369 VerifyEachNodeIsAssignedToAnEp] Rerunning with verbose output on a non-minimal build will show node assignments.\u001b[m"
+  ],
+  "environment": {
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+    "isolated": false,
+    "adapter": {}
+  },
+  "expectedProviderWarnings": [
+    "\u001b[0;93m2026-09-07 16:27:14.277299 [W:onnxruntime:, session_state.cc:1367 VerifyEachNodeIsAssignedToAnEp] Some nodes were not assigned to the preferred execution providers which may or may not have an negative impact on performance. e.g. ORT explicitly assigns shape related ops to CPU to improve perf.\u001b[m",
+    "\u001b[0;93m2026-09-07 16:27:14.278999 [W:onnxruntime:, session_state.cc:1369 VerifyEachNodeIsAssignedToAnEp] Rerunning with verbose output on a non-minimal build will show node assignments.\u001b[m",
+    "\u001b[0;93m2026-09-07 16:27:18.275799 [W:onnxruntime:, session_state.cc:1367 VerifyEachNodeIsAssignedToAnEp] Some nodes were not assigned to the preferred execution providers which may or may not have an negative impact on performance. e.g. ORT explicitly assigns shape related ops to CPU to improve perf.\u001b[m",
+    "\u001b[0;93m2026-09-07 16:27:18.276199 [W:onnxruntime:, session_state.cc:1369 VerifyEachNodeIsAssignedToAnEp] Rerunning with verbose output on a non-minimal build will show node assignments.\u001b[m"
+  ],
+  "unexpectedBrowserErrors": []
+}

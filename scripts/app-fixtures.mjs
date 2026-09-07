@@ -6,7 +6,7 @@ import { extname, resolve, sep } from "node:path";
 import { chromium } from "playwright-core";
 
 const root = resolve(fileURLToPath(new URL("../", import.meta.url)));
-const mime = { ".html": "text/html", ".js": "application/javascript", ".mjs": "application/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
+const mime = { ".html": "text/html", ".js": "application/javascript", ".mjs": "application/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".wasm": "application/wasm", ".wav": "audio/wav" };
 
 export async function startBrowser({ args = [] } = {}) {
   const server = createServer(async (request, response) => {
@@ -18,6 +18,7 @@ export async function startBrowser({ args = [] } = {}) {
       const bytes = await readFile(file);
       response.writeHead(200, {
         "Content-Type": mime[extname(file)] || "application/octet-stream",
+        "Content-Length": bytes.length,
         ...(process.env.NARRATE_TEST_ISOLATION === "0" ? {} : {
           "Cross-Origin-Opener-Policy": "same-origin",
           "Cross-Origin-Embedder-Policy": "require-corp",

@@ -9,7 +9,7 @@ import { MODEL } from '../model-config.js';
 const help = `Usage: node scripts/audition.mjs [options]
   --corpus standard|smoke|prose,numbers,question (default: standard)
   --text "A custom passage, up to 500 characters."
-  --rates ${MODEL.synthesisRates.join(',')}  --repeats 3  --pace 1.5  --seed 42
+  --rates ${MODEL.synthesisRates.join(',')}  --repeats 3  --pace 1  --seed 42
   --out DIRECTORY   --timeout SECONDS (default: 1800)
   --software-gpu    Explicit SwiftShader opt-in: correctness only, not a phone benchmark.
 Set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH if Chromium is not installed by Playwright.

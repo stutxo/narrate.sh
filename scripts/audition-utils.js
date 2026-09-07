@@ -1,4 +1,4 @@
-import { MODEL } from '../model-config.js?v=12';
+import { MODEL } from '../model-config.js?v=13';
 
 export const passages = {
   prose: 'The quiet garden filled with birdsong as the morning sun warmed the trees.',
@@ -9,7 +9,7 @@ export const passages = {
 
 export function auditionPlan(options = {}) {
   const rates = options.rates ?? MODEL.synthesisRates, repeats = options.repeats ?? 3;
-  const targetRate = options.targetRate ?? 1.5, seed = options.seed ?? Date.now() >>> 0;
+  const targetRate = options.targetRate ?? 1, seed = options.seed ?? Date.now() >>> 0;
   if (!Array.isArray(rates) || !rates.length || new Set(rates).size !== rates.length
     || rates.some(rate => !Number.isFinite(rate) || rate <= 0 || !MODEL.synthesisRates.includes(rate))) {
     throw new Error(`Rates must be unique values from ${MODEL.synthesisRates.join(', ')}.`);

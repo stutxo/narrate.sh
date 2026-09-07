@@ -16,13 +16,13 @@ test("speech builds a head start, refills after starvation, and respects Pause",
   await reply(page); await waitSession(page, saved => saved.generated === 1);
   await page.waitForFunction(() => document.querySelector("#audio").duration >= 8);
   await page.waitForTimeout(150);
-  assert((await audioState(page)).time < .01, "Eight seconds of audio is not a ten-second listening lead at 1.5×");
+  assert((await audioState(page)).time < .01, "Eight seconds of audio is not a ten-second listening lead at 1×");
   assert.match(await page.locator("#status").textContent(), /Building audio buffer… 17%/);
   await reply(page);
   await page.waitForFunction(() => document.querySelector("#audio").currentTime > .1);
   assert.equal(await page.locator("#status").textContent(), "Generating speech… 33%");
   const first = await audioState(page);
-  assert.equal(first.rate, 1.5);
+  assert.equal(first.rate, 1);
   assert.equal((await session(page)).generated, 2, "Playback starts while four passages still await generation");
   const starve = async () => {
     const target = await page.locator("#audio").evaluate(audio => {
@@ -65,6 +65,7 @@ test("the playback head start follows listening speed, not just stored audio dur
   t.after(app.close);
   const { page, errors } = app;
   await begin(page, Array(3).fill(PASSAGE).join(" "));
+  await page.locator("#audio").evaluate(audio => { audio.playbackRate = 1.5; });
   await reply(page); await waitSession(page, saved => saved.generated === 1);
   await page.waitForFunction(() => document.querySelector("#audio").duration >= 12);
   await page.waitForTimeout(150);
@@ -78,6 +79,8 @@ test("the playback head start follows listening speed, not just stored audio dur
   await page.locator("#new-session").click();
   await waitSession(page, saved => saved.text === "" && saved.audioKeys.length === 0);
   await begin(page, Array(3).fill(PASSAGE).join(" "));
+  assert.equal((await audioState(page)).rate, 1, "New sessions return to normal playback speed");
+  await page.locator("#audio").evaluate(audio => { audio.playbackRate = 1.5; });
   await reply(page); await waitSession(page, saved => saved.generated === 1);
   await page.waitForFunction(() => document.querySelector("#audio").duration >= 12);
   assert.equal((await audioState(page)).rate, 1.5);
@@ -103,6 +106,7 @@ test("short speech and Stop release the head start, and paused Resume keeps 1.5�
   await page.locator("#new-session").click();
   await waitSession(page, saved => saved.text === "" && saved.audioKeys.length === 0);
   await begin(page, [PASSAGE, PASSAGE].join(" "));
+  await page.locator("#audio").evaluate(audio => { audio.playbackRate = 1.5; });
   await reply(page); await waitSession(page, saved => saved.generated === 1);
   await page.waitForFunction(() => document.querySelector("#audio").duration >= 1.2);
   assert((await audioState(page)).time < .01);
@@ -133,7 +137,7 @@ test("seeking into generated speech bypasses an initial head-start wait", { time
   await page.locator("#audio").evaluate(audio => { audio.currentTime = 1; });
   await page.waitForFunction(() => document.querySelector("#audio").currentTime > 1.1);
   assert.equal((await session(page)).generated, 1, "An explicit seek can play saved audio while more speech is still being generated");
-  assert.equal((await audioState(page)).rate, 1.5);
+  assert.equal((await audioState(page)).rate, 1);
   await page.locator("#speak").click(); await waitStopped(page);
   cleanErrors(errors);
 });
@@ -173,7 +177,7 @@ test("interrupted initial Play recovers when speech is ready without a refresh",
   await page.waitForFunction(() => document.querySelector("#audio").currentTime > .1, undefined, { timeout: 6000 });
   assert.equal((await session(page)).generated, 1);
   assert.equal(await page.locator("#speak").textContent(), "Stop generation", "Interrupted playback recovers before all speech is generated");
-  assert.equal((await audioState(page)).rate, 1.5);
+  assert.equal((await audioState(page)).rate, 1);
   await reply(page); await waitStopped(page);
   cleanErrors(errors);
 });
@@ -249,7 +253,7 @@ test("active managed playback continues through completion and still honors Paus
   await page.waitForFunction(time => document.querySelector("#audio").currentTime > time + .15, streaming.time);
   const completed = await audioState(page);
   assert.notEqual(completed.src, streaming.src);
-  assert.equal(completed.duration, 40); assert.equal(completed.paused, false); assert.equal(completed.rate, 1.5);
+  assert.equal(completed.duration, 40); assert.equal(completed.paused, false); assert.equal(completed.rate, 1);
   await page.locator('button[data-plyr="play"]').first().click();
   await page.waitForFunction(() => document.querySelector("#audio").paused);
   const paused = await audioState(page);
@@ -300,6 +304,7 @@ test("pause, seek, stop, reload and resume preserve one saved narration", { time
   t.after(app.close);
   const { page, errors } = app;
   await begin(page);
+  assert.equal((await audioState(page)).rate, 1, "Fresh sessions start at normal playback speed");
   await reply(page); await reply(page);
   await waitSession(page, saved => saved.generated === 2);
   await page.waitForFunction(() => document.querySelector("#audio").readyState >= 1);
@@ -329,12 +334,13 @@ test("pause, seek, stop, reload and resume preserve one saved narration", { time
   const resumedRequests = await page.evaluate(() => window.__speech.requests.map(value => value.text));
   assert.deepEqual(resumedRequests, saved.parts.slice(2), "Resume requests only the unfinished text");
   await page.locator("#new-session").click();
-  await waitSession(page, saved => saved.text === "" && saved.audioKeys.length === 0);
+  await waitSession(page, saved => saved.text === "" && saved.audioKeys.length === 0 && saved.rate === 1);
   assert.equal(await page.locator("#output").isVisible(), false);
   assert.equal(await page.locator("#text").isEditable(), true);
   assert.equal(await page.evaluate(() => window.__speech.liveUrls.size), 0);
   await page.reload();
   await page.waitForFunction(() => !document.querySelector("#text").disabled);
+  assert.equal((await audioState(page)).rate, 1, "The new session keeps its default after reload");
   assert.equal(await page.locator("#text").inputValue(), "");
   assert.equal(await page.locator("audio").count(), 1);
   assert.equal(await page.locator("#previous,#next,[download]").count(), 0);
