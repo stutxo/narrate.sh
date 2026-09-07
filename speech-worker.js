@@ -1,4 +1,4 @@
-import { MODEL, AUDIO } from './model-config.js?v=14';
+import { MODEL, AUDIO } from './model-config.js?v=15';
 
 let model, activeId, failure;
 

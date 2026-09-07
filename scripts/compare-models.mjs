@@ -7,7 +7,8 @@ import { startBrowser } from './app-fixtures.mjs';
 import { CANDIDATES } from './compare-config.js';
 
 const help = `Usage: npm run compare:models -- [options]
-  --models pocket-cpu (default: current production CPU model)
+  --models kitten (default: current Kitten Micro WebGPU model)
+  --models pocket-cpu  Optional Pocket Alba CPU/WebAssembly comparison.
   --models kitten,inflect,pocket  Optional historical WebGPU comparison.
   --models pocket-f32  Optional older Pocket checkpoint in explicit WebGPU FP32 mode.
   --corpus standard|smoke (default: standard)

@@ -1,11 +1,13 @@
-// Optional: downloads Pocket weights (~237 MB) and runs real CPU/WASM inference.
-// No WebGPU or cross-origin isolation is required. Not part of the ordinary CI suite.
+// Optional: downloads ~45 MB and requires WebGPU plus native audio streaming.
+// Set NARRATE_SOFTWARE_WEBGPU=1 to explicitly use Chromium's software adapter.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { startBrowser, session, waitSession } from './app-fixtures.mjs';
 
-test('real Pocket CPU speech plays before generation finishes and saves valid PCM', { timeout: 720000 }, async t => {
-  const environment = await startBrowser();
+test('real Micro speech plays before generation finishes and saves valid PCM', { timeout: 720000 }, async t => {
+  const software = process.env.NARRATE_SOFTWARE_WEBGPU === '1';
+  const environment = await startBrowser({ args: software
+    ? ['--enable-unsafe-webgpu', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : [] });
   t.after(() => environment.close());
   const context = await environment.browser.newContext();
   const page = await context.newPage(), errors = [];
@@ -13,10 +15,9 @@ test('real Pocket CPU speech plays before generation finishes and saves valid PC
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   await page.exposeFunction('modelDiagnostic', message => console.log(message));
   await page.addInitScript(() => {
-    Object.defineProperty(navigator, 'gpu', { configurable: true, value: undefined });
     const trace = window.__modelTest = { requests: [], chunks: [], errors: [], firstPlayback: null };
     const NativeWorker = window.Worker;
-    // Observe real messages; preserve the worker, CPU runtime, encoder, and playback APIs.
+    // Observe real messages; preserve the worker, GPU, encoder, and playback APIs.
     window.Worker = class extends NativeWorker {
       constructor(...args) {
         super(...args);
@@ -34,16 +35,18 @@ test('real Pocket CPU speech plays before generation finishes and saves valid PC
             if (!Number.isFinite(sample)) trace.errors.push('Nonfinite speech sample.');
             squared += sample * sample;
           }
-          const chunk = { id: data.id, bytes: view.byteLength, seconds: view.byteLength / 48000,
-            rms: Math.sqrt(squared / (view.byteLength / 2)) };
+          const request = trace.requests.find(request => request.id === data.id);
+          if (!request || data.modelId !== request.modelId) trace.errors.push('The worker returned a different model identity.');
+          const chunk = { id: data.id, modelId: data.modelId, bytes: view.byteLength, seconds: view.byteLength / 48000,
+            rms: Math.sqrt(squared / (view.byteLength / 2)), metrics: data.metrics };
           trace.chunks.push(chunk);
-          window.modelDiagnostic(`Real CPU chunk ${data.id}: ${chunk.seconds.toFixed(3)} seconds of speech at ${((performance.now() - trace.started) / 1000).toFixed(2)}s.`);
+          window.modelDiagnostic(`Real GPU chunk ${data.id}: ${chunk.seconds.toFixed(3)} seconds of speech at ${((performance.now() - trace.started) / 1000).toFixed(2)}s.`);
         });
       }
       postMessage(message, ...args) {
         if (message.type === 'generate') {
           trace.started ??= performance.now();
-          trace.requests.push({ id: message.id, text: message.text });
+          trace.requests.push({ id: message.id, modelId: message.modelId, text: message.text });
         }
         return super.postMessage(message, ...args);
       }
@@ -66,14 +69,23 @@ test('real Pocket CPU speech plays before generation finishes and saves valid PC
   const support = await page.evaluate(async () => {
     const version = new URL(document.querySelector('script[type="module"]').src).search;
     const { getStreamConfig } = await import(new URL(`streaming-player.js${version}`, location.href).href);
-    return { gpu: Boolean(navigator.gpu), codec: (await getStreamConfig())?.codec, isolated: crossOriginIsolated };
+    const { MODEL } = await import(new URL(`model-config.js${version}`, location.href).href);
+    const adapter = await navigator.gpu?.requestAdapter();
+    const description = [adapter?.info?.vendor, adapter?.info?.architecture, adapter?.info?.description].filter(Boolean).join(' ');
+    return { gpu: Boolean(adapter), description,
+      software: Boolean(adapter?.isFallbackAdapter || /swiftshader|software|lavapipe|llvmpipe/i.test(description)),
+      codec: (await getStreamConfig())?.codec, isolated: crossOriginIsolated,
+      model: { id: MODEL.id, name: MODEL.name, voice: MODEL.voice, backend: MODEL.backend } };
   });
-  assert.equal(support.gpu, false, 'CPU generation runs without any WebGPU API.');
-  if (!support.codec) {
-    t.skip(`Native streaming unavailable (${JSON.stringify(support)}). Configure a supported Chromium.`);
+  if (!support.gpu || !support.codec) {
+    t.skip(`WebGPU/native streaming unavailable (${JSON.stringify(support)}). Configure a supported Chromium; software GPU requires NARRATE_SOFTWARE_WEBGPU=1.`);
     return;
   }
-  t.diagnostic(`Using CPU/WebAssembly and native ${support.codec}; this machine is not an iPhone benchmark.`);
+  assert(!support.software || software, 'Software WebGPU requires explicit NARRATE_SOFTWARE_WEBGPU=1.');
+  assert.deepEqual({ name: support.model.name, voice: support.model.voice, backend: support.model.backend },
+    { name: 'Kitten Micro', voice: 'Bella', backend: 'webgpu' }, 'Test the actual production Micro/Bella WebGPU configuration.');
+  t.diagnostic(`Using ${software ? 'explicit software WebGPU (not a phone benchmark)' : 'the browser WebGPU adapter'} and native ${support.codec}.`);
+  t.diagnostic(`Browser ${environment.browser.version()}, adapter: ${support.description || 'not reported'}.`);
   if (process.env.NARRATE_TEST_ISOLATION === '0') assert.equal(support.isolated, false);
   // Leave enough speech after the startup buffer to prove playback overlaps inference.
   const passage = 'Extraordinary possibilities emerge when technology becomes accessible, allowing thoughtful experimentation with beautifully expressive narration across different environments.';
@@ -101,6 +113,8 @@ test('real Pocket CPU speech plays before generation finishes and saves valid PC
   assert.equal(await page.locator('#speak').textContent(), 'Ready to play', await page.locator('#status').textContent());
   assert.equal(completed.generated, planned.parts.length);
   assert.equal(completed.audioKeys.length, planned.parts.length);
+  assert.equal(completed.model, support.model.id, 'Saved audio retains the production model identity.');
+  assert.equal(completed.rate, 1, 'New narration defaults to natural 1× playback.');
   assert.equal(trace.chunks.length, planned.parts.length);
   assert(trace.chunks.every(chunk => chunk.rms > .00001), 'Every model result must contain audible, finite PCM.');
   await page.waitForFunction(time => document.querySelector('#audio').currentTime > time,
@@ -128,4 +142,6 @@ test('real Pocket CPU speech plays before generation finishes and saves valid PC
   }));
   assert.deepEqual(sizes, trace.chunks.map(chunk => chunk.bytes + 44));
   assert.deepEqual(errors, [], 'No unexpected browser or worker errors.');
+  t.diagnostic(JSON.stringify({ firstPlayback: trace.firstPlayback, chunks: trace.chunks,
+    savedChunks: completed.audioKeys.length, playbackRate: completed.rate }));
 });

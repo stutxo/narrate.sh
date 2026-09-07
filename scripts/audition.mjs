@@ -11,7 +11,7 @@ const help = `Usage: node scripts/audition.mjs [options]
   --text "A custom passage, up to 500 characters."
   --rates ${MODEL.synthesisRates.join(',')}  --repeats 3  --pace 1  --seed 42
   --out DIRECTORY   --timeout SECONDS (default: 1800)
-  --software-gpu    Only used for a WebGPU model; ignored for the current CPU model.
+  --software-gpu    Explicit SwiftShader opt-in: correctness only, not a phone benchmark.
 Set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH if Chromium is not installed by Playwright.
 Downloads about ${MODEL.downloadMB} MB for ${MODEL.name}, warms each rate, then writes report.json, raw WAVs, and review.html.
 Open review.html to listen at matched pace; raw WAV files alone play at their natural rate.`;

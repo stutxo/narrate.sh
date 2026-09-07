@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { MODEL as PRODUCTION, AUDIO } from '../model-config.js';
 import { MODEL } from './models/kitten-config.js';
+import { MODEL as CPU } from '../models/pocket-config.js';
 
 const source = (await readFile(new URL('../speech-worker.js', import.meta.url), 'utf8'))
   .replace(/^import .*;\n/gm, '')
@@ -169,9 +170,9 @@ const failedFrontend = worker(new Float32Array([0, .5]), () => {
 await failedFrontend.send(17);
 assert.equal(failedFrontend.stats.generated, 0, 'GPU loss during asynchronous text preparation must not launch inference.');
 
-// The production architecture uses the same lazy, strict worker boundary.
-const production = worker(undefined, undefined, { config: PRODUCTION, createModel: async ({ config, status }) => {
-  assert.equal(config, PRODUCTION); status('Starting CPU…');
+// Optional CPU comparisons retain the same lazy, strict worker boundary.
+const production = worker(undefined, undefined, { config: CPU, createModel: async ({ config, status }) => {
+  assert.equal(config, CPU); status('Starting CPU…');
   return { generate: async (text, rate) => {
     assert.equal(text, 'Hello world.'); assert.equal(rate, 1);
     return { samples: new Float32Array([-.5, .5]), ...AUDIO };
@@ -179,24 +180,25 @@ const production = worker(undefined, undefined, { config: PRODUCTION, createMode
 } });
 assert.equal(production.imports.length, 0);
 await production.send(18);
-assert.deepEqual(production.imports, [PRODUCTION.adapter]);
-assert.equal(production.stats.initialized, 0, 'CPU production does not initialize the historical GPU engine.');
-assert.equal(production.replies.at(-1).message.modelId, PRODUCTION.id);
+assert.deepEqual(production.imports, [CPU.adapter]);
+assert.equal(production.stats.initialized, 0, 'Optional CPU generation does not initialize the historical GPU engine.');
+assert.equal(production.replies.at(-1).message.modelId, CPU.id);
 assert.equal(production.replies.at(-1).message.pcm.byteLength, 4);
 const invalidProductionRate = worker(undefined, undefined, { config: PRODUCTION });
-await invalidProductionRate.send(19, { synthesisRate: 1.5 });
+await invalidProductionRate.send(19, { synthesisRate: 2 });
 assert.equal(invalidProductionRate.imports.length, 0, 'Unsupported production rates cannot load any engine.');
 assert.equal(invalidProductionRate.replies.at(-1).message.type, 'error');
 
 const rootConfigSource = await readFile(new URL('../model-config.js', import.meta.url), 'utf8');
-const configSource = await readFile(new URL('../models/pocket-config.js', import.meta.url), 'utf8');
+const configSource = rootConfigSource;
 assert(!/^\s*import\b/m.test(rootConfigSource) && !/\bimport\s*\(/.test(rootConfigSource), 'UI metadata cannot load an inference runtime.');
 assert(!/^\s*import\b/m.test(configSource) && !/\bimport\s*\(/.test(configSource), 'The reexported model configuration is metadata only.');
 assert.deepEqual(AUDIO, { sampleRate: 24000, channels: 1 });
-assert.equal(PRODUCTION.backend, 'wasm');
-assert.equal(PRODUCTION.voice, 'Alba');
+assert.equal(PRODUCTION.backend, 'webgpu');
+assert.equal(PRODUCTION.voice, 'Bella');
+assert.equal(PRODUCTION.id, MODEL.id, 'Restored production keeps the historical Kitten generation identity.');
 assert.match(PRODUCTION.revision, /^[a-f0-9]{40}$/);
-assert.deepEqual(PRODUCTION.synthesisRates, [1]);
+assert.deepEqual(PRODUCTION.synthesisRates, [1, 1.2, 1.5]);
 for (const [from, to] of [[PRODUCTION.revision, '0'.repeat(40)], [PRODUCTION.voice, 'Another voice'],
   [PRODUCTION.adapter, PRODUCTION.adapter.replace('v=', 'v=next-')]]) {
   const changed = vm.runInNewContext(configSource.replaceAll('export const ', 'const ').replaceAll(from, to) + '\nMODEL;');
@@ -205,4 +207,4 @@ for (const [from, to] of [[PRODUCTION.revision, '0'.repeat(40)], [PRODUCTION.voi
 const relabelled = vm.runInNewContext(configSource.replaceAll('export const ', 'const ')
   .replace(`name: '${PRODUCTION.name}'`, "name: 'A clearer UI label'") + '\nMODEL;');
 assert.equal(relabelled.id, PRODUCTION.id, 'UI-only labels do not invalidate saved generation.');
-console.log('Worker passed: lazy CPU production and historical Micro adapters, configuration identity, canonical PCM, timings and failure races.');
+console.log('Worker passed: Kitten production and optional CPU adapters, configuration identity, canonical PCM, timings and failure races.');

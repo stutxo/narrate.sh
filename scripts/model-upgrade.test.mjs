@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
+import { MODEL as POCKET } from '../models/pocket-config.js';
 import { startBrowser, openApp, session, waitSession, reply, audioState, PASSAGE, begin, waitStopped, cleanErrors } from './app-fixtures.mjs';
 
 let environment, configSource;
 before(async () => {
-  configSource = await readFile(new URL('../models/pocket-config.js', import.meta.url), 'utf8');
+  configSource = await readFile(new URL('../model-config.js', import.meta.url), 'utf8');
   environment = await startBrowser();
 });
 after(async () => { await environment?.close(); });
@@ -19,7 +20,7 @@ const text = ['The first reader', 'The second reader', 'The final reader']
 async function changeConfig(page, { revision, name = 'Another local voice', expectAudio = true } = {}) {
   let source = configSource.replace(/name: '[^']*'/, `name: ${JSON.stringify(name)}`);
   if (revision) source = source.replace(/revision: '[^']*'/, `revision: ${JSON.stringify(revision)}`);
-  await page.route('**/models/pocket-config.js*', route => route.fulfill({ contentType: 'application/javascript', body: source }));
+  await page.route('**/model-config.js*', route => route.fulfill({ contentType: 'application/javascript', body: source }));
   await page.reload();
   await page.waitForFunction(() => !document.querySelector('#text').disabled);
   if (expectAudio) {
@@ -82,18 +83,43 @@ test('changing only the model label loads metadata and preserves Resume compatib
   const { page, errors } = app;
   const saved = await recording(page), requests = [];
   page.on('request', request => requests.push(request.url()));
-  await changeConfig(page, { name: 'Renamed Pocket' });
-  assert.equal(await page.locator('#model-name').textContent(), 'Renamed Pocket · Alba · CPU');
-  assert.match(await page.locator('.lede').textContent(), /Renamed Pocket/);
+  await changeConfig(page, { name: 'Renamed Micro' });
+  assert.equal(await page.locator('#model-name').textContent(), 'Renamed Micro · WebGPU');
+  assert.match(await page.locator('.lede').textContent(), /Renamed Micro/);
   assert.equal(await page.locator('#speak').textContent(), 'Resume generation');
   await assertPreserved(page, saved);
-  assert.deepEqual(requests.filter(url => /\/models\/(?![^/]*-config\.js)|\/vendor\/(?:kitten|pocket)\/|huggingface\.co|speech-worker\.js/.test(url)), [],
+  assert.deepEqual(requests.filter(url => /\/models\/|\/vendor\/(?:kitten|pocket)\/|huggingface\.co|speech-worker\.js/.test(url)), [],
     'Opening the app reads model metadata without importing its adapter, inference runtime, or weights');
   await page.locator('#speak').click();
   await page.waitForFunction(() => window.__speech.requests.length > 0);
   assert.equal(await page.evaluate(() => window.__speech.requests[0].text), saved.parts[2]);
   await page.locator('#speak').click(); await waitStopped(page);
   assert.equal((await session(page)).model, saved.model);
+  cleanErrors(errors);
+});
+
+test('saved Pocket audio stays playable until the user regenerates it with Kitten', { timeout: 15000 }, async t => {
+  const app = await openApp(environment, { seconds: 4 }); t.after(app.close);
+  const { page, errors } = app;
+  const saved = { ...await recording(page), model: POCKET.id };
+  await page.evaluate(model => new Promise((resolve, reject) => {
+    const open = indexedDB.open('narrate.sh');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result, transaction = db.transaction('current', 'readwrite'), store = transaction.objectStore('current');
+      const request = store.get('session');
+      request.onsuccess = () => store.put({ ...request.result, model }, 'session');
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      transaction.onabort = () => { db.close(); reject(transaction.error); };
+    };
+  }), POCKET.id);
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('#audio').readyState >= 2 && !document.querySelector('#audio').seeking);
+  assert.equal(await page.locator('#model-name').textContent(), 'Kitten Micro · WebGPU');
+  assert.equal(await page.locator('#speak').textContent(), 'Read aloud again');
+  await assertPreserved(page, saved);
+  const replacement = await replaceFirstPassage(page, saved);
+  assert(replacement.model.includes('KittenML/kitten-tts-micro-0.8'));
   cleanErrors(errors);
 });
 

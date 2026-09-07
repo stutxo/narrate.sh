@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self' https://huggingface.co https://*.huggingface.co https://*.hf.co; media-src blob:; img-src 'self'; style-src 'self' 'unsafe-inline'; base-uri 'none'; object-src 'none'; form-action 'none'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; worker-src 'self'; connect-src 'self' https://huggingface.co https://*.huggingface.co https://*.hf.co; media-src blob:; img-src 'self'; style-src 'self' 'unsafe-inline'; base-uri 'none'; object-src 'none'; form-action 'none'" />
   <meta name="referrer" content="no-referrer" />
   <title>narrate.sh</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
@@ -58,11 +58,11 @@
 <body>
   <main>
     <h1>narrate.sh</h1>
-    <p class="lede">Paste text, hear it read aloud by Pocket TTS with Alba, locally in your browser.</p>
+    <p class="lede">Paste text, hear it read aloud by Kitten Micro, locally in your browser with WebGPU.</p>
     <form id="speech-form">
       <label for="text">Text</label>
       <textarea id="text" required disabled placeholder="Type something to read aloud."></textarea>
-      <div class="meta"><span id="word-count">0 words</span><span id="model-name">Pocket TTS · Alba · CPU</span></div>
+      <div class="meta"><span id="word-count">0 words</span><span id="model-name">Kitten Micro · WebGPU</span></div>
       <button id="speak" type="submit" disabled>Read aloud</button>
       <p id="status" role="status" aria-live="polite">Opening your session…</p>
     </form>
@@ -72,6 +72,6 @@
     <button id="new-session" type="button" disabled>New session</button>
     <a class="source" href="https://github.com/stutxo/narrate.sh" target="_blank" rel="noopener noreferrer">GitHub</a>
   </main>
-  <script type="module" src="./app.js?v=14"></script>
+  <script type="module" src="./app.js?v=15"></script>
 </body>
 </html>

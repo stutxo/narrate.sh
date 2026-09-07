@@ -1,5 +1,5 @@
-import { CANDIDATES } from './compare-config.js?v=14';
-import { passages, pcmStats, wavBytes } from './audition-utils.js?v=14';
+import { CANDIDATES } from './compare-config.js?v=15';
+import { passages, pcmStats, wavBytes } from './audition-utils.js?v=15';
 
 const $ = id => document.getElementById(id);
 const artifacts = new Map(), urls = [];
@@ -64,7 +64,7 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('pagehide', stop);
 
 function startWorker(model) {
-  worker = new Worker(new URL(`./compare-worker.js?v=14&model=${model.key}`, import.meta.url), { type: 'module' });
+  worker = new Worker(new URL(`./compare-worker.js?v=15&model=${model.key}`, import.meta.url), { type: 'module' });
   worker.onerror = event => { pending?.reject(new Error(event.message || 'The speech worker failed.')); pending = undefined; };
   worker.onmessage = ({ data }) => {
     if (!pending || data.id !== pending.id || data.type === 'status') return;

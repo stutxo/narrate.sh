@@ -1,6 +1,6 @@
 # Mobile voice comparison — 7 September 2026
 
-This document records the original GPU comparison; its saved A/B/C samples and metadata remain unchanged. The main app now uses Pocket TTS / Alba on CPU/WASM at 1× after listening review of B. The browser checkpoint and voice are the same, while execution changes from WebGPU FP32 to WASM FP32. The comparison tool defaults to `pocket-cpu`; historical GPU candidates remain optional.
+This document records the original GPU comparison; its saved A/B/C samples and metadata remain unchanged. The main app uses Kitten Micro / Bella on WebGPU at 1×. After trying Pocket CPU, the smaller approximately 45 MB Micro download was preferred to Pocket's approximately 237 MB download, with Micro's voice judged acceptable. This is a download-size and listening decision, not evidence that Micro is the fastest model on every phone. The comparison tool defaults to `kitten`; all alternatives remain optional.
 
 ## Candidates
 
@@ -67,4 +67,4 @@ NARRATE_TEST_ISOLATION=0 npm run compare:models -- --models kitten,inflect,pocke
 
 The published samples were collected in three separate, sequential browser runs and assembled without changing their PCM. Each source report is retained beside the combined report. A fresh run can have different initialization or compilation costs; exact cross-runtime waveform parity is not claimed.
 
-Pocket CPU is now the production model for testing on the phone. Its real CPU smoke test passed with WebGPU inaccessible and without cross-origin isolation: the first “Hello world” generated 0.96 seconds of nonzero audio in 3.85 seconds after cold initialization, and a cached fresh worker initialized in 0.65 seconds. These desktop measurements do not promise realtime performance on iPhone. Test sustained narration, initial Play, buffer recovery, Stop/Resume and completed-track playback on the physical phone. The approximately 237 MB initial download and greater FP32 memory use remain relevant.
+Pocket CPU remains available as an optional comparison candidate. Its real CPU smoke test passed with WebGPU inaccessible and without cross-origin isolation: the first “Hello world” generated 0.96 seconds of nonzero audio in 3.85 seconds after cold initialization, and a cached fresh worker initialized in 0.65 seconds. These desktop measurements do not promise realtime performance on iPhone. Test sustained narration, initial Play, buffer recovery, Stop/Resume and completed-track playback on the physical phone. The approximately 237 MB initial download and greater FP32 memory use remain relevant.

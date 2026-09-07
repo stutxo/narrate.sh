@@ -188,11 +188,11 @@ test('the actual comparison worker validates identity, rate and finite PCM throu
 });
 
 
-test('CPU comparison works without WebGPU and keeps historical Kitten identity', { timeout: 10000 }, async t => {
+test('Kitten is the default and optional CPU comparison works without WebGPU', { timeout: 10000 }, async t => {
   const { page, errors } = await openComparison(t);
   await page.evaluate(() => Object.defineProperty(navigator, 'gpu', { configurable: true, value: undefined }));
-  assert.equal(await page.locator('#models input:checked').inputValue(), 'pocket-cpu');
-  const report = await page.evaluate(() => window.comparison.run({ corpus: 'smoke', repeats: 1, seed: 42 }));
+  assert.equal(await page.locator('#models input:checked').inputValue(), 'kitten');
+  const report = await page.evaluate(() => window.comparison.run({ models: ['pocket-cpu'], corpus: 'smoke', repeats: 1, seed: 42 }));
   assert.deepEqual(report.failures, []); assert.equal(report.results.length, 1);
   assert.equal(report.models[0].key, 'pocket-cpu'); assert.equal(report.models[0].backend, 'wasm');
   assert.equal(report.results[0].playbackRate, 1); assert(report.results[0].signal.rms > 0);

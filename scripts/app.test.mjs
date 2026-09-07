@@ -423,36 +423,40 @@ test("startup storage failure stays explicit and does not offer generation", { t
   cleanErrors(app.errors, [/Session storage is unavailable/]);
 });
 
-for (const gpu of [false, "throw"]) {
-  test(`CPU narration generates, saves and restores with ${gpu === false ? 'no WebGPU API' : 'a throwing WebGPU getter'}`, { timeout: 15000 }, async t => {
+for (const gpu of [false, "throw", "reject", "null"]) {
+  test(`unavailable WebGPU (${gpu}) preserves drafts and does not offer generation`, { timeout: 10000 }, async t => {
     const app = await openApp(environment, { gpu });
     t.after(app.close);
     const { page, errors } = app;
-    await page.locator("#text").fill("Speech on a device without WebGPU.");
-    await waitSession(page, saved => saved.text === "Speech on a device without WebGPU.");
-    assert.equal(await page.locator("#speak").isEnabled(), true);
-    assert.equal(await page.locator("#model-name").textContent(), "Pocket TTS · Alba · CPU");
-    assert.match(await page.locator(".lede").textContent(), /Pocket TTS with Alba, locally in your browser/);
+    await page.locator("#text").fill("A draft on a device without WebGPU.");
+    await waitSession(page, saved => saved.text === "A draft on a device without WebGPU.");
+    assert.equal(await page.locator("#speak").isDisabled(), true);
+    assert.match(await page.locator("#status").textContent(), /WebGPU is unavailable/);
     assert.equal(await page.evaluate(() => window.__speech.requests.length), 0);
-    await page.locator("#speak").click(); await reply(page); await waitStopped(page);
-    await page.waitForFunction(() => document.querySelector("#audio").currentTime > .1);
-    await page.locator("#audio").evaluate(audio => { audio.pause(); audio.currentTime = .4; });
-    const saved = await waitSession(page, value => value.generated === 1 && Math.abs(value.position - .4) < .01);
-    assert.deepEqual(saved.audioKeys, [0]);
-    assert.equal(saved.rate, 1);
-    assert.equal(await page.evaluate(() => window.__speech.gpuReads), 0);
     await page.reload();
-    await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2 && !document.querySelector("#audio").seeking);
-    assert.equal(await page.locator("#text").inputValue(), saved.text);
-    assert.equal((await audioState(page)).duration, 1.2);
-    assert(Math.abs((await audioState(page)).time - .4) < .01);
-    await page.locator("#audio").evaluate(audio => audio.play());
-    await page.waitForFunction(() => document.querySelector("#audio").currentTime > .5);
-    assert.equal(await page.evaluate(() => window.__speech.gpuReads), 0);
-    assert.equal(await page.evaluate(() => window.__speech.requests.length), 0, "Restoring speech does not load the model");
+    await page.waitForFunction(() => !document.querySelector("#text").disabled);
+    assert.equal(await page.locator("#text").inputValue(), "A draft on a device without WebGPU.");
+    assert.equal(await page.locator("#speak").isDisabled(), true);
     cleanErrors(errors);
   });
 }
+
+test("saved speech remains playable when WebGPU later becomes unavailable", { timeout: 15000 }, async t => {
+  const app = await openApp(environment);
+  t.after(app.close);
+  const { page, errors } = app;
+  await begin(page, PASSAGE); await reply(page); await waitStopped(page);
+  await page.evaluate(() => sessionStorage.setItem("test-gpu", "reject"));
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+  assert.match(await page.locator("#status").textContent(), /WebGPU is unavailable/);
+  assert.equal(await page.locator("#speak").isDisabled(), true);
+  await page.locator("#audio").evaluate(audio => audio.play());
+  await page.waitForFunction(() => document.querySelector("#audio").currentTime > .1);
+  assert.equal((await audioState(page)).duration, 1.2);
+  assert.equal(await page.evaluate(() => window.__speech.requests.length), 0);
+  cleanErrors(errors);
+});
 
 test("a missing native encoder falls back to a saved whole track", { timeout: 15000 }, async t => {
   const app = await openApp(environment, { noEncoder: true });

@@ -1,4 +1,4 @@
-import { CANDIDATES } from './compare-config.js?v=14';
+import { CANDIDATES } from './compare-config.js?v=15';
 
 const config = CANDIDATES.find(model => model.key === new URL(import.meta.url).searchParams.get('model'));
 let model, activeId, failure;

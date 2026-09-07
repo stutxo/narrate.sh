@@ -1,14 +1,14 @@
-import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=14";
-import { setupPlayer } from "./player-controls.js?v=14";
-import { MODEL } from "./model-config.js?v=14";
+import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=15";
+import { setupPlayer } from "./player-controls.js?v=15";
+import { MODEL } from "./model-config.js?v=15";
 
 const $ = (id) => document.getElementById(id);
 const text = $("text"), button = $("speak"), status = $("status"), audio = $("audio");
-document.querySelector('.lede').textContent = `Paste text, hear it read aloud by ${MODEL.name} with ${MODEL.voice}, locally in your browser.`;
-$("model-name").textContent = `${MODEL.name} · ${MODEL.voice} · CPU`;
+document.querySelector('.lede').textContent = `Paste text, hear it read aloud by ${MODEL.name}, locally in your browser with WebGPU.`;
+$("model-name").textContent = `${MODEL.name} · WebGPU`;
 const freshSession = () => ({ text: "", parts: [], generated: 0, position: 0, rate: 1, model: MODEL.id });
 const modelChanged = () => session.generated > 0 && session.model !== MODEL.id;
-let session = freshSession(), database, running = false, cancelled = false;
+let session = freshSession(), database, gpuReady = false, running = false, cancelled = false;
 let worker, pending, jobId = 0, audioUrl, recordingDuration = 0, playbackRequest = 0, loadingAudio = false;
 let writes = Promise.resolve(), saveTimer, lastPositionSave = 0, wakeLock;
 let savedText, savedParts, savedPosition, savedRate;
@@ -16,7 +16,7 @@ let streamConfig, streaming, playbackError, playAfterStop = false;
 let playbackWanted = false, playBlocked = false, statusMessage = status.textContent;
 let replacingSession = false;
 const diagnostics = new URLSearchParams(location.search).get('diagnostics') === '1'
-  ? (await import('./diagnostics.js?v=14')).setupDiagnostics(audio) : null;
+  ? (await import('./diagnostics.js?v=15')).setupDiagnostics(audio) : null;
 
 function say(message = statusMessage) {
   statusMessage = message;
@@ -77,7 +77,7 @@ function render() {
   $("word-count").textContent = `${count.toLocaleString()} ${count === 1 ? "word" : "words"}`;
   text.disabled = !database;
   text.readOnly = running || session.generated > 0;
-  button.disabled = !database || cancelled && running || !running && (!count || complete && !modelChanged());
+  button.disabled = !database || !gpuReady || cancelled && running || !running && (!count || complete && !modelChanged());
   button.textContent = running ? "Stop generation" : modelChanged() ? "Read aloud again" : complete ? "Ready to play" : session.generated ? "Resume generation" : "Read aloud";
   $("new-session").disabled = !database || running || !session.text;
 }
@@ -196,7 +196,7 @@ function closeWorker() {
 }
 function synthesize(value) {
   if (!worker) {
-    worker = new Worker("./speech-worker.js?v=14", { type: "module" });
+    worker = new Worker("./speech-worker.js?v=15", { type: "module" });
     worker.onmessage = ({ data }) => {
       if (!pending || data.id !== pending.id) return;
       if (data.type === "status") {
@@ -338,7 +338,7 @@ $("speech-form").addEventListener("submit", (event) => {
     }
     say("Stopping…");
     render();
-  } else if (database && words() > 0) void generate();
+  } else if (database && gpuReady && words() > 0) void generate();
 });
 text.addEventListener("input", () => {
   session.text = text.value;
@@ -369,7 +369,7 @@ $("new-session").addEventListener("click", async () => {
   text.value = "";
   $("output").hidden = true;
   render();
-  try { await save(null, null, true); say("Ready for text."); }
+  try { await save(null, null, true); say(gpuReady ? "Ready for text." : "WebGPU is required to generate speech."); }
   catch (error) { report(error); }
   text.focus();
 });
@@ -430,10 +430,17 @@ try {
   void setupPlayer(audio);
   text.value = session.text;
   await save();
-  streamConfig = await getStreamConfig().catch(() => null);
-  diagnostics?.environment({ backend: MODEL.backend, codec: streamConfig?.codec ?? null, model: MODEL.id });
-  say("Ready. Your current session is saved automatically.");
-  if (modelChanged()) say('Saved audio is ready. Read aloud again to use the current model.');
+  say("Checking WebGPU…");
+  const [adapter, config] = await Promise.all([
+    Promise.resolve().then(() => navigator.gpu?.requestAdapter({ powerPreference: "high-performance" })).catch(() => null),
+    getStreamConfig().catch(() => null),
+  ]);
+  streamConfig = config;
+  gpuReady = Boolean(adapter);
+  diagnostics?.environment({ backend: MODEL.backend, webgpu: gpuReady,
+    shaderF16: Boolean(adapter?.features?.has('shader-f16')), codec: config?.codec ?? null, model: MODEL.id });
+  say(gpuReady ? "Ready. Your current session is saved automatically." : "WebGPU is unavailable. Use Safari 26+ or another WebGPU-capable browser.");
+  if (modelChanged() && gpuReady) say('Saved audio is ready. Read aloud again to use the current model.');
   if (session.generated) await showAudio();
 } catch (error) { report(error); }
 render();

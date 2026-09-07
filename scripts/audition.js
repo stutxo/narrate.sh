@@ -1,5 +1,5 @@
-import { auditionPlan, pcmStats, wavBytes } from './audition-utils.js?v=14';
-import { MODEL } from '../model-config.js?v=14';
+import { auditionPlan, pcmStats, wavBytes } from './audition-utils.js?v=15';
+import { MODEL } from '../model-config.js?v=15';
 
 const $ = id => document.getElementById(id);
 document.title = `${MODEL.name} audition`;
@@ -88,7 +88,7 @@ async function run(options = {}) {
   holdScreen();
   try {
     if (MODEL.backend !== 'wasm' && !navigator.gpu) throw new Error('This model requires WebGPU.');
-    worker = new Worker(new URL('../speech-worker.js?v=14', import.meta.url), { type: 'module' });
+    worker = new Worker(new URL('../speech-worker.js?v=15', import.meta.url), { type: 'module' });
     worker.onerror = event => pending?.reject(new Error(event.message || 'The speech worker failed.'));
     worker.onmessage = ({ data }) => {
       if (!pending || data.id !== pending.id) return;

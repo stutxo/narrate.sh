@@ -44,12 +44,18 @@ function installControls(options) {
   const controls = window.__speech = {
     requests: [], completed: [], pending: [], workers: [], terminated: 0,
     delay: options.delay ?? null, seconds: options.seconds ?? 1.2,
-    fault: options.fault || null, events: [], liveUrls: new Map(), peakReadBytes: 0, gpuReads: 0,
+    fault: options.fault || null, events: [], liveUrls: new Map(), peakReadBytes: 0, gpuReads: 0, adapterRequests: 0,
   };
   Object.defineProperty(navigator, "gpu", { configurable: true, get() {
     controls.gpuReads++;
-    if (options.gpu === false) return undefined;
-    throw new Error("CPU narration must not access navigator.gpu.");
+    const mode = sessionStorage.getItem("test-gpu") ?? options.gpu;
+    if (mode === false) return undefined;
+    if (mode === "throw") throw new Error("WebGPU access is unavailable.");
+    return { requestAdapter: async () => {
+      controls.adapterRequests++;
+      if (mode === "reject") throw new Error("Adapter unavailable");
+      return mode === "null" ? null : { features: new Set(["shader-f16"]) };
+    } };
   } });
   if (options.noEncoder) window.AudioEncoder = undefined;
   if (options.managedMedia) {
