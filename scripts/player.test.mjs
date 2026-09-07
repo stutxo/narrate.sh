@@ -120,3 +120,134 @@ test("playback remains usable without MediaSession support", { timeout: 10000 },
   assert.equal((await audioState(app.page)).paused, true);
   assert.deepEqual(app.external, []); cleanErrors(app.errors);
 });
+
+for (const position of [35, 40]) {
+  test(`Resume keeps the ${position}s saved cursor for rewind and system controls while buffering`, { timeout: 20000 }, async t => {
+    const app = await openPlayer({ seconds: 20 }); t.after(app.close);
+    const { page, errors } = app;
+    await begin(page); await reply(page); await reply(page);
+    await waitSession(page, saved => saved.generated === 2);
+    await page.locator("#audio").evaluate(audio => audio.pause());
+    await page.locator("#speak").click(); await waitStopped(page);
+    await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+    await page.locator("#audio").evaluate((audio, time) => { audio.currentTime = time; }, position);
+    await waitSession(page, saved => Math.abs(saved.position - position) < .01);
+    const requests = await page.evaluate(() => window.__speech.requests.length);
+    await page.locator("#speak").click();
+    await page.waitForFunction(previous => window.__speech.requests.length > previous, requests);
+    await page.waitForFunction(() => document.querySelector("#audio").duration >= 40);
+    const held = await audioState(page);
+    assert.equal(held.time, position, "The native timeline keeps the saved position before new speech arrives");
+    assert.equal(held.paused, true);
+    assert.equal(held.buffered.length, 0, "Restoring the cursor must not bypass the listening lead");
+    await page.waitForFunction(time => window.__system.positions.some(state => state?.position === time && state.duration >= 40), position);
+    assert.match(await page.locator('.plyr__time--current').textContent(), new RegExp(`00:${position}`));
+
+    await page.locator('[data-plyr="play"]').click();
+    await page.waitForTimeout(100);
+    assert.equal((await audioState(page)).time, position, "Play waits at the saved cursor until enough speech is buffered");
+    assert.equal((await audioState(page)).buffered.length, 0);
+    await page.evaluate(() => window.__system.actions.pause());
+    await page.locator('[data-plyr="rewind"]').click();
+    await page.waitForFunction(time => {
+      const audio = document.querySelector("#audio");
+      return audio.readyState >= 2 && !audio.seeking && Math.abs(audio.currentTime - time) < .01;
+    }, position - 10);
+    assert.equal((await audioState(page)).paused, true, "Rewind during a paused Resume cannot autoplay");
+    await page.evaluate(() => window.__system.actions.seekto({ seekTime: 30 }));
+    await page.waitForFunction(() => !document.querySelector("#audio").seeking);
+    await page.evaluate(() => window.__system.actions.seekbackward({}));
+    await page.waitForFunction(() => !document.querySelector("#audio").seeking);
+    assert.equal((await audioState(page)).time, 20);
+    await page.locator('[data-plyr="play"]').click();
+    await page.waitForFunction(() => document.querySelector("#audio").currentTime > 20.1);
+    await page.evaluate(() => window.__system.actions.pause());
+    const paused = await audioState(page);
+    await page.locator("#speak").click(); await waitStopped(page);
+    await waitSession(page, saved => Math.abs(saved.position - paused.time) < .05 && saved.rate === 1.5);
+    assert.equal((await audioState(page)).paused, true);
+    cleanErrors(errors);
+  });
+}
+
+test("Resume retains a late saved cursor while only the audio prefix has been encoded", { timeout: 20000 }, async t => {
+  const app = await openPlayer({ seconds: 20 });
+  t.after(async () => { await app.page.evaluate(() => window.__releasePreload?.()); await app.close(); });
+  const { page, errors } = app;
+  await begin(page); await reply(page); await reply(page); await reply(page);
+  await waitSession(page, saved => saved.generated === 3);
+  await page.locator("#audio").evaluate(audio => audio.pause());
+  await page.locator("#speak").click(); await waitStopped(page);
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+  await page.locator("#audio").evaluate(audio => { audio.currentTime = 55; });
+  await waitSession(page, saved => saved.position === 55);
+  await page.evaluate(() => {
+    const read = Blob.prototype.arrayBuffer;
+    let count = 0;
+    Blob.prototype.arrayBuffer = async function () {
+      if (this.size === 20 * 48000 && ++count === 2) {
+        window.__preloadBlocked = true;
+        await new Promise(resolve => { window.__releasePreload = resolve; });
+      }
+      return read.call(this);
+    };
+  });
+  await page.locator("#speak").click();
+  await page.waitForFunction(() => window.__preloadBlocked && document.querySelector("#audio").readyState >= 1);
+  await page.waitForTimeout(100);
+  const prefix = await audioState(page);
+  assert.equal(prefix.duration, 60, "Metadata exposes the full saved timeline before its prefix is re-encoded");
+  assert.equal(prefix.time, 55, "The browser cannot clamp a late saved cursor to the first encoded chunk");
+  assert.equal(prefix.buffered.length, 0, "The saved cursor is restored without making the beginning playable");
+  assert.equal(prefix.paused, true);
+  await page.locator("#speak").click(); await waitStopped(page);
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+  const stopped = await audioState(page);
+  assert.equal(stopped.time, 55); assert.equal(stopped.duration, 60); assert.equal(stopped.paused, true);
+  await waitSession(page, saved => saved.position === 55 && saved.generated === 3);
+  await page.evaluate(() => window.__releasePreload());
+  await page.waitForTimeout(50);
+  assert.equal((await audioState(page)).src, stopped.src, "Late preload completion cannot replace the saved recording");
+  cleanErrors(errors);
+});
+
+test("Resume uses the saved recording duration while native WAV metadata is pending", { timeout: 15000 }, async t => {
+  const app = await openPlayer({ seconds: 20 }); t.after(app.close);
+  const { page, errors } = app;
+  await begin(page); await reply(page); await reply(page);
+  await waitSession(page, saved => saved.generated === 2);
+  await page.locator("#audio").evaluate(audio => { audio.pause(); audio.currentTime = 35; });
+  await waitSession(page, saved => saved.position === 35);
+  await page.evaluate(() => {
+    const load = HTMLMediaElement.prototype.load;
+    let deferred = false;
+    HTMLMediaElement.prototype.load = function () {
+      if (!deferred && this.id === "audio" && typeof window.__speech.liveUrls.get(this.src) === "number") {
+        deferred = true;
+        // Delay this recording's metadata using a real native unloaded source,
+        // keeping the app's loading lifecycle and saved WAV intact.
+        window.__deferredMetadataURL = URL.createObjectURL(new MediaSource());
+        this.src = window.__deferredMetadataURL;
+      }
+      return load.call(this);
+    };
+  });
+  await page.locator("#speak").click(); await waitStopped(page);
+  const pending = await audioState(page);
+  assert.equal(pending.ready, 0); assert.equal(pending.duration, NaN);
+  assert.equal(await page.locator("#speak").isEnabled(), true);
+  const requests = await page.evaluate(() => window.__speech.requests.length);
+  await page.locator("#speak").click();
+  await page.waitForFunction(previous => window.__speech.requests.length > previous && document.querySelector("#audio").readyState >= 1, requests);
+  const resumed = await audioState(page);
+  assert.equal(resumed.time, 35); assert.equal(resumed.duration, 40);
+  assert.equal(resumed.buffered.length, 0); assert.equal(resumed.paused, true);
+  await page.locator('[data-plyr="rewind"]').click();
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2 && !document.querySelector("#audio").seeking);
+  assert.equal((await audioState(page)).time, 25);
+  await page.locator("#speak").click(); await waitStopped(page);
+  await page.waitForFunction(() => document.querySelector("#audio").readyState >= 2);
+  assert.equal((await audioState(page)).time, 25);
+  await page.evaluate(() => URL.revokeObjectURL(window.__deferredMetadataURL));
+  cleanErrors(errors);
+});

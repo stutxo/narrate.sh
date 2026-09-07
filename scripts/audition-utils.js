@@ -34,9 +34,13 @@ export function auditionPlan(options = {}) {
   return { candidates, corpus, repeats, targetRate, seed, jobs };
 }
 
-export function pcmStats(pcm) {
+export function pcmStats(pcm, sampleRate = 24000) {
   if (!(pcm instanceof Uint8Array) || !pcm.length || pcm.length % 2) throw new Error('Invalid PCM16 audio.');
+  if (!Number.isInteger(sampleRate) || sampleRate < 100) throw new Error('Invalid sample rate.');
   const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength), samples = pcm.length / 2;
+  // Diagnostic only: quiet consonants and deliberate pauses must not be trimmed automatically.
+  const windowSamples = Math.round(sampleRate * .01);
+  let windowSquared = 0, windowStart = 0, firstLoud = samples, lastLoud = 0;
   let squared = 0, peak = 0, nearZero = 0, atLimit = 0;
   for (let i = 0; i < pcm.length; i += 2) {
     const value = view.getInt16(i, true), magnitude = Math.abs(value / 32768);
@@ -44,12 +48,23 @@ export function pcmStats(pcm) {
     peak = Math.max(peak, magnitude);
     if (magnitude < 0.001) nearZero++;
     if (value === -32768 || value === 32767) atLimit++;
+    windowSquared += magnitude * magnitude;
+    const end = i / 2 + 1;
+    if (end - windowStart === windowSamples || end === samples) {
+      if (windowSquared / (end - windowStart) >= .001 ** 2) {
+        firstLoud = Math.min(firstLoud, windowStart); lastLoud = end;
+      }
+      windowStart = end; windowSquared = 0;
+    }
   }
   const rms = Math.sqrt(squared / samples), warnings = [];
   if (peak === 0) warnings.push('All PCM samples are zero: no audible speech.');
   else if (rms < 0.00001) warnings.push('Extremely low signal level: check that speech is audible.');
   if (atLimit) warnings.push(`${atLimit} samples reach a PCM limit: possible clipping; listen for distortion.`);
-  return { samples, rms, peak, nearZeroFraction: nearZero / samples, atLimitFraction: atLimit / samples, warnings };
+  return { samples, rms, peak, nearZeroFraction: nearZero / samples, atLimitFraction: atLimit / samples,
+    quietEdges: { thresholdDbfs: -60, windowMs: windowSamples / sampleRate * 1000,
+      leadingSeconds: firstLoud / sampleRate, trailingSeconds: (samples - lastLoud) / sampleRate,
+      allQuiet: lastLoud === 0 }, warnings };
 }
 
 export function wavBytes(pcm, sampleRate = 24000) {

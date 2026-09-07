@@ -45,6 +45,29 @@ test('signal checks and WAV export preserve PCM subarrays without claiming speec
   assert.equal(header.getInt16(44, true), -32768); assert.equal(header.getInt16(48, true), 32767);
 });
 
+test('quiet edges measure waveform padding without treating internal pauses as playback stalls', () => {
+  const sampleRate = 24000, bytes = new Uint8Array(24000 * 2 + 8);
+  const pcm = bytes.subarray(4, -4), view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  // Quiet nonzero edges surround two sounds separated by a deliberate internal pause.
+  for (let i = 0; i < sampleRate; i++) {
+    const loud = (i >= 4800 && i < 7200) || (i >= 14400 && i < 16800);
+    view.setInt16(i * 2, (i % 2 ? -1 : 1) * (loud ? 1000 : 30), true);
+  }
+  const before = pcm.slice(), signal = pcmStats(pcm, sampleRate);
+  assert.deepEqual(signal.quietEdges, { thresholdDbfs: -60, windowMs: 10,
+    leadingSeconds: .2, trailingSeconds: .3, allQuiet: false });
+  assert.deepEqual(pcm, before, 'Measurement never trims or changes speech samples.');
+  assert.equal(signal.nearZeroFraction, .8, 'Internal quiet samples are separate from edge padding.');
+  assert.deepEqual(pcmStats(new Uint8Array(48000)).quietEdges, { thresholdDbfs: -60, windowMs: 10,
+    leadingSeconds: 1, trailingSeconds: 1, allQuiet: true });
+  const partial = new Uint8Array(482); new DataView(partial.buffer).setInt16(480, 33, true);
+  assert.equal(pcmStats(partial).quietEdges.leadingSeconds, .01);
+  assert.equal(pcmStats(partial).quietEdges.trailingSeconds, 0, 'A short final window uses its actual sample count.');
+  assert.equal(pcmStats(pcm, 48000).quietEdges.leadingSeconds, .1);
+  assert.equal(pcmStats(pcm, 48000).quietEdges.trailingSeconds, .15);
+  for (const rate of [0, -1, NaN, 24000.5]) assert.throws(() => pcmStats(partial, rate));
+});
+
 // Replace only speech arrival. WAV parsing, media controls, and object URLs stay native.
 function installSpeech() {
   const controls = window.__auditionTest = { requests: [], workers: [], liveUrls: new Set(), mode: 'auto', holdAfter: Infinity,
@@ -116,6 +139,8 @@ test('the browser audition excludes warmups and plays native WAVs at matched nom
     assert(Math.abs(row.listeningSeconds - 2 / 3) < .0001);
     assert(Math.abs(row.headroom - row.listeningSeconds / .12) < 1e-9,
       'Worker headroom includes PCM conversion after the generation phase.');
+    assert.deepEqual(row.signal.quietEdges, { thresholdDbfs: -60, windowMs: 10,
+      leadingSeconds: 0, trailingSeconds: 0, allQuiet: false }, 'The browser report includes waveform measurements.');
   }
   await page.waitForFunction(() => [...document.querySelectorAll('audio')].every(audio => audio.readyState >= 1));
   const media = await page.locator('audio').evaluateAll(elements => elements.map(audio => ({

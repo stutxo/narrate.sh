@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import originalExcitation from './fixtures/kitten-source-excitation.mjs';
+import { optimizeSourceExcitation } from './kitten-excitation.mjs';
 
 const revision = '35f31049363ea39464dc05d42c1135b5c9e3235f';
 const output = fileURLToPath(new URL('../vendor/kitten/', import.meta.url));
@@ -44,6 +46,8 @@ try {
   await writeFile(join(source, 'src/phonemizer.ts'), phonemizer);
 
   let engine = await readFile(join(source, 'src/engine.ts'), 'utf8');
+  // Require the exact pinned fixture, then apply the offline-tested memory patch.
+  engine = replace(engine, originalExcitation, optimizeSourceExcitation(originalExcitation));
   // Cache only pinned model/voice URLs. Caching is optional: private browsing,
   // quota exhaustion, and cache eviction must never prevent generation.
   const modelCache = `async function modelBytes(url: string): Promise<ArrayBuffer> {

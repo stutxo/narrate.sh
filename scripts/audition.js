@@ -1,4 +1,4 @@
-import { auditionPlan, pcmStats, wavBytes } from './audition-utils.js';
+import { auditionPlan, pcmStats, wavBytes } from './audition-utils.js?v=11';
 
 const $ = id => document.getElementById(id);
 let worker, pending, wake, serial = 0, running = false, revealed = false;
@@ -55,7 +55,7 @@ function addResult(row, text, wav) {
   const save = document.createElement('button'); save.textContent = 'Save raw WAV'; save.className = 'detail'; save.hidden = !revealed;
   save.onclick = () => download(wav, row.file, 'audio/wav');
   const note = document.createElement('p'); note.className = 'detail muted'; note.hidden = !revealed;
-  note.textContent = `Raw WAV needs ${row.playbackRate.toFixed(3)}× playback to match this listening pace. At-limit samples may indicate clipping; near-zero samples include normal pauses.`;
+  note.textContent = `Raw WAV needs ${row.playbackRate.toFixed(3)}× playback to match this listening pace. At-limit samples may indicate clipping. Quiet edges estimate waveform pauses, not playback stalls; no audio is trimmed.`;
   card.append(heading, passage, audio, detail, note, save); $('results').append(card);
 }
 
@@ -74,6 +74,7 @@ async function run(options = {}) {
     notes: ['Timings use the real worker. Warmups are excluded from results.',
       'Words count the source passage, before number expansion.',
       'Signal checks detect malformed or suspect audio, not pronunciation or listening quality.',
+      'Quiet edges use 10 ms RMS windows below -60 dBFS in raw audio; divide by playbackRate for listening time. All-quiet audio reports its full duration at both edges.',
       'Raw WAV files require the recorded playbackRate for matched nominal listening pace.',
       'If backgrounded is true, browser throttling may have affected these timings.',
       'A single repeat and software GPU timings cannot establish phone performance.'],
@@ -82,7 +83,7 @@ async function run(options = {}) {
   holdScreen();
   try {
     if (!navigator.gpu) throw new Error('This browser does not expose WebGPU.');
-    worker = new Worker(new URL('../speech-worker.js?v=10', import.meta.url), { type: 'module' });
+    worker = new Worker(new URL('../speech-worker.js?v=11', import.meta.url), { type: 'module' });
     worker.onerror = event => pending?.reject(new Error(event.message || 'The speech worker failed.'));
     worker.onmessage = ({ data }) => {
       if (!pending || data.id !== pending.id) return;
@@ -100,7 +101,7 @@ async function run(options = {}) {
     for (const [index, job] of plan.jobs.entries()) {
       const data = await generate(job.text, job.synthesisRate, `Comparison ${index + 1}/${plan.jobs.length}: ${job.label}…`);
       if (data.sampleRate !== 24000 || !data.metrics || !(data.metrics.generationMs > 0)) throw new Error('Unexpected speech worker protocol.');
-      const signal = pcmStats(data.pcm), words = job.text.trim().split(/\s+/).length;
+      const signal = pcmStats(data.pcm, data.sampleRate), words = job.text.trim().split(/\s+/).length;
       if (!signal.peak) throw new Error(`Comparison ${job.label} returned silent audio; audition is unusable.`);
       const playbackRate = plan.targetRate / job.synthesisRate;
       const audioSeconds = signal.samples / data.sampleRate, listeningSeconds = audioSeconds / playbackRate;

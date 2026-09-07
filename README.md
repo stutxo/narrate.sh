@@ -54,4 +54,8 @@ The tool warms each synthesis rate, rotates the comparison order, and saves a JS
 
 Listen using the audition page or generated review page: these apply `targetRate / synthesisRate` to compare at the same nominal pace. Raw WAV files played separately have no playback-rate metadata. A/B/C labels hide the synthesis rates until revealed. The report includes the audition corpus and is saved locally; nothing is uploaded. Empty or suspect signal checks do not rate pronunciation, naturalness, or fatigue.
 
+`signal.quietEdges` estimates leading and trailing waveform quiet time using 10 ms RMS windows below -60 dBFS. These raw-audio durations must be divided by the recorded playback rate for listening time. Internal pauses are excluded; an entirely quiet recording reports its full duration at both edges. This helps distinguish generated pauses from the native player waits recorded by diagnostics. It does not identify words or justify trimming quiet consonants, and never changes the audio.
+
 Evaluate whether words and numbers are complete, pronunciations are correct in context, pauses and sentence joins are natural, and the voice remains comfortable over several minutes. Compare the same passages before revealing rates. Automated tests establish signal and player correctness; choosing a better voice still needs listening. Accept a speed change only after that comparison and a sustained test on the physical iPhone, including first Play, 1.5× playback, underflow recovery, screen lock, Stop/Resume, and the final saved-track handoff.
+
+See [the mobile review](MOBILE_REVIEW.md) for measured changes and source-linked experiments to evaluate next.

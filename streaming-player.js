@@ -1,4 +1,4 @@
-import { Output, NullTarget, Mp4OutputFormat, AudioSampleSource, AudioSample, Quality } from './vendor/media/runtime.js?v=10';
+import { Output, NullTarget, Mp4OutputFormat, AudioSampleSource, AudioSample, Quality } from './vendor/media/runtime.js?v=11';
 
 export async function getStreamConfig() {
   const Source = globalThis.ManagedMediaSource || globalThis.MediaSource;
@@ -26,10 +26,11 @@ const covers = (ranges, start, end) => {
 // Saved PCM stays in IndexedDB. Only compressed fragments are retained here;
 // the native decoder holds approximately 30 seconds behind / 60 seconds ahead.
 export class StreamingPlayer {
-  constructor(audio, config, { position = 0, bufferSeconds = 0, onerror = () => {}, onready = () => {} } = {}) {
+  constructor(audio, config, { position = 0, initialDuration = 0, bufferSeconds = 0, onerror = () => {}, onready = () => {} } = {}) {
     this.audio = audio;
     this.config = config;
     this.position = Math.max(0, position);
+    this.initialDuration = initialDuration;
     this.bufferSeconds = bufferSeconds;
     this.buffering = bufferSeconds > 0;
     this.onerror = onerror;
@@ -47,6 +48,10 @@ export class StreamingPlayer {
     const queue = () => { void this.queue(); };
     for (const event of ['timeupdate', 'play', 'ratechange']) audio.addEventListener(event, queue, { signal: this.events.signal });
     audio.addEventListener('seeking', () => {
+      if (this.restoringPosition) {
+        this.restoringPosition = false;
+        if (audio.currentTime === this.position) return;
+      }
       // Seeking is an explicit request to hear a position that is already ready.
       this.buffering = false;
       if (!this.primed) this.position = audio.currentTime;
@@ -67,6 +72,12 @@ export class StreamingPlayer {
     audio.disableRemotePlayback = true; // Local generated audio has no AirPlay URL.
     audio.src = this.url;
     audio.load();
+    if (this.position && this.initialDuration >= this.position) {
+      // The native default start position is visible even before metadata. Keep
+      // rewind and system controls anchored here while the audio lead builds.
+      this.restoringPosition = true;
+      audio.currentTime = this.position;
+    }
   }
 
   alive(promise) { return Promise.race([promise, this.aborted]); }
@@ -88,6 +99,9 @@ export class StreamingPlayer {
     });
     this.check();
     this.buffer = this.source.addSourceBuffer(this.config.mime);
+    // A restored cursor may be beyond the first re-encoded chunk. Preserve the
+    // known saved timeline so metadata cannot clamp that cursor to the prefix.
+    if (this.initialDuration) this.source.duration = this.initialDuration;
     for (const event of ['bufferedchange', 'updateend']) {
       this.buffer.addEventListener(event, () => { void this.queue(); }, { signal: this.events.signal });
     }
@@ -185,7 +199,7 @@ export class StreamingPlayer {
   updateDuration() {
     if (this.source.readyState !== 'open' || this.buffer.updating) return;
     const ranges = this.buffer.buffered;
-    const duration = Math.max(this.duration, ranges.length ? ranges.end(ranges.length - 1) : 0);
+    const duration = Math.max(this.duration, this.initialDuration, ranges.length ? ranges.end(ranges.length - 1) : 0);
     if (this.source.duration !== duration) this.source.duration = duration;
   }
 

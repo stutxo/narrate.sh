@@ -1,4 +1,4 @@
-import { KittenTTSEngine, textToInputIds } from './vendor/kitten/runtime.js?v=10';
+import { KittenTTSEngine, textToInputIds } from './vendor/kitten/runtime.js?v=11';
 
 const model = 'https://huggingface.co/KittenML/kitten-tts-micro-0.8/resolve/1ccf72b2c2048fd17efac7de2fab32d10e225084/';
 let engine, activeId, failure;

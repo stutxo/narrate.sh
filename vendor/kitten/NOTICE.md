@@ -8,4 +8,6 @@ Local modifications use the JavaScript dictionary/rules frontend directly, remov
 
 Reproduce the bundle and assets with `node scripts/vendor-kitten.mjs` from the project root. The script downloads the pinned source and builds with esbuild 0.25.11; no npm dependencies or build step are needed to serve the app.
 
+The CPU source-excitation stage accumulates weighted, Float32-rounded harmonics into Float64 sums instead of retaining all nine harmonics. This reduces temporary allocation by 28 bytes per waveform sample while preserving the original summation and random-number order. `scripts/kitten-excitation.mjs` applies this patch; its offline regression compares the rebuilt runtime against an unmodified Apache-2.0 source fixture. The STFT and GPU shaders are unchanged by this patch.
+
 The app uses [KittenML/kitten-tts-micro-0.8](https://huggingface.co/KittenML/kitten-tts-micro-0.8/tree/1ccf72b2c2048fd17efac7de2fab32d10e225084), revision `1ccf72b2c2048fd17efac7de2fab32d10e225084` (approximately 44.7 MB for model and voices). The model and voices are Apache-2.0 and downloaded at runtime; model weights are not distributed in this repository.

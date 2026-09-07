@@ -1,17 +1,17 @@
-import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=10";
-import { setupPlayer } from "./player-controls.js?v=10";
+import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=11";
+import { setupPlayer } from "./player-controls.js?v=11";
 
 const $ = (id) => document.getElementById(id);
 const text = $("text"), button = $("speak"), status = $("status"), audio = $("audio");
 const freshSession = () => ({ text: "", parts: [], generated: 0, position: 0, rate: 1.5 });
 let session = freshSession(), database, gpuReady = false, running = false, cancelled = false;
-let worker, pending, jobId = 0, audioUrl, playbackRequest = 0, loadingAudio = false;
+let worker, pending, jobId = 0, audioUrl, recordingDuration = 0, playbackRequest = 0, loadingAudio = false;
 let writes = Promise.resolve(), saveTimer, lastPositionSave = 0, wakeLock;
 let savedText, savedParts, savedPosition, savedRate;
 let streamConfig, streaming, playbackError, playAfterStop = false;
 let playbackWanted = false, playBlocked = false, statusMessage = status.textContent;
 const diagnostics = new URLSearchParams(location.search).get('diagnostics') === '1'
-  ? (await import('./diagnostics.js?v=10')).setupDiagnostics(audio) : null;
+  ? (await import('./diagnostics.js?v=11')).setupDiagnostics(audio) : null;
 
 function say(message = statusMessage) {
   statusMessage = message;
@@ -130,6 +130,7 @@ async function showAudio(startPlayback = false) {
     streaming = null;
     session.position = position;
     audioUrl = URL.createObjectURL(track);
+    recordingDuration = bytes / 48000;
     audio.onloadedmetadata = async () => {
       if (request !== playbackRequest) return;
       audio.currentTime = Math.min(position, Number.isFinite(audio.duration) ? audio.duration : position);
@@ -152,6 +153,7 @@ function startStreaming() {
   const request = ++playbackRequest;
   audio.onloadedmetadata = null;
   const position = (audioUrl || streaming) && !loadingAudio ? audio.currentTime : session.position;
+  const initialDuration = audioUrl ? recordingDuration : Number.isFinite(audio.duration) ? audio.duration : 0;
   playbackWanted = !session.generated || !audio.paused;
   const rate = session.rate;
   loadingAudio = true;
@@ -159,7 +161,7 @@ function startStreaming() {
   streaming?.dispose();
   session.position = position;
   streaming = new StreamingPlayer(audio, streamConfig, {
-    position, bufferSeconds: 10,
+    position, initialDuration, bufferSeconds: 10,
     onready: () => {
       if (request !== playbackRequest) return;
       loadingAudio = false;
@@ -189,7 +191,7 @@ function closeWorker() {
 }
 function synthesize(value) {
   if (!worker) {
-    worker = new Worker("./speech-worker.js?v=10", { type: "module" });
+    worker = new Worker("./speech-worker.js?v=11", { type: "module" });
     worker.onmessage = ({ data }) => {
       if (!pending || data.id !== pending.id) return;
       if (data.type === "status") {
@@ -330,6 +332,7 @@ $("new-session").addEventListener("click", async () => {
   if (audioUrl) URL.revokeObjectURL(audioUrl);
   audioUrl = null;
   loadingAudio = false;
+  recordingDuration = 0;
   session = freshSession();
   diagnostics?.clear();
   text.value = "";
