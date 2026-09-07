@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kitten Micro audition</title>
+<style>
+  :root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
+  body { max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
+  button, select, input { font: inherit; padding: .4rem; } input { width: 4rem; }
+  fieldset { border: 0; padding: 0; display: flex; gap: .7rem; flex-wrap: wrap; align-items: end; }
+  label { display: grid; gap: .2rem; } audio { display: block; width: 100%; margin: .6rem 0; }
+  article { border-top: 1px solid #8886; margin-top: 1rem; padding-top: .5rem; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8rem; }
+  [hidden] { display: none !important; } .muted { opacity: .75; }
+</style>
+<h1>Kitten Micro audition</h1>
+<p>Compare A, B, and C at the same nominal listening pace. Listen for missing words, numbers, pronunciation, natural pauses, and tiring or distorted speech before revealing the rates.</p>
+<p class="muted">Runs locally with WebGPU. The model downloads about 45 MB on first use. Three short warmups are excluded from comparisons. Three repeats rotate the order; a quick single repeat is exploratory. Signal checks are not speech-quality scores.</p>
+<form id="settings">
+  <fieldset id="fields">
+    <label>Passages<select id="corpus"><option value="standard">Prose, numbers, questions</option><option value="smoke">Quick: Hello world</option></select></label>
+    <label>Repeats<input id="repeats" type="number" min="1" max="6" value="3"></label>
+    <label>Listening pace<input id="pace" type="number" min=".5" max="2" step=".1" value="1.5"></label>
+    <button>Generate comparisons</button>
+  </fieldset>
+</form>
+<p><button id="stop" hidden>Stop</button> <button id="reveal" disabled>Reveal rates and timings</button> <button id="json" disabled>Save report JSON</button></p>
+<p id="status" role="status">Ready. Keep this page in the foreground while generating.</p>
+<div id="results"></div>
+<script type="module" src="./audition.js"></script>
+</html>

@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; worker-src 'self'; connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co https://*.huggingface.co https://*.hf.co; media-src blob:; style-src 'unsafe-inline' https://cdn.jsdelivr.net; base-uri 'none'; object-src 'none'; form-action 'none'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; worker-src 'self'; connect-src 'self' https://huggingface.co https://*.huggingface.co https://*.hf.co; media-src blob:; img-src 'self'; style-src 'self' 'unsafe-inline'; base-uri 'none'; object-src 'none'; form-action 'none'" />
   <meta name="referrer" content="no-referrer" />
   <title>narrate.sh</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/plyr@3.8.4/dist/plyr.css" />
+  <link rel="stylesheet" href="./vendor/plyr/plyr.css?v=3.8.4" />
   <style>
     * { box-sizing: border-box; }
     [hidden] { display: none !important; }
@@ -19,19 +19,39 @@
     label { display: block; margin-bottom: 8px; font-weight: bold; }
     textarea, button { border: 1px solid #000; border-radius: 0; font: inherit; }
     textarea { display: block; width: 100%; min-height: 220px; padding: 12px; color: #000; background: #fff; resize: vertical; }
+    textarea[readonly] { color: #000; background: #fff; cursor: text; -webkit-text-fill-color: #000; }
     button { min-height: 44px; padding: 8px 12px; color: #000; background: #fff; cursor: pointer; }
     button:disabled, textarea:disabled { color: #666; background: #f5f5f5; cursor: default; }
     :focus-visible { outline: 2px solid #000; outline-offset: 2px; }
     #speak { width: 100%; margin-top: 14px; color: #fff; background: #000; }
     #speak:disabled { color: #666; background: #eee; border-style: dotted; }
-    .meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: .8rem; }
+    .meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: .8rem; }
     #status { min-height: 1.5em; margin: 12px 0 0; overflow-wrap: anywhere; }
     #output { margin-top: 18px; }
     audio { width: 100%; }
     #new-session { margin-top: 18px; }
     .source { display: block; width: fit-content; padding: 12px 0; color: inherit; font-size: .8rem; }
-    .plyr { --plyr-color-main: #000; --plyr-audio-controls-background: #fff; --plyr-audio-control-color: #000; --plyr-audio-control-color-hover: #fff; --plyr-range-fill-background: #000; }
+    .plyr { --plyr-color-main: #000; --plyr-audio-controls-background: #fff; --plyr-audio-control-color: #000; --plyr-audio-control-color-hover: #fff; --plyr-range-fill-background: #000; --plyr-font-size-base: 1rem; --plyr-font-size-small: .875rem; --plyr-menu-color: #000; --plyr-menu-background: #fff; min-width: 0; }
     .plyr--audio .plyr__controls { border: 1px solid #000; border-radius: 0; }
+    .plyr .plyr__control { min-width: 44px; min-height: 44px; }
+    .plyr .plyr__control svg { margin: auto; }
+    .plyr .plyr__menu__container { max-width: calc(100vw - 48px); }
+    .plyr .plyr__menu__container > div { width: auto !important; height: auto !important; }
+    .plyr .plyr__menu__container .plyr__control > span { flex-wrap: wrap; column-gap: .5em; }
+    .plyr .plyr__menu__container [role="menu"] { max-height: 50vh; overflow-y: auto; }
+    @media (max-width: 600px) {
+      main { padding-top: 24px; }
+      .lede { margin-bottom: 20px; }
+      textarea { min-height: 180px; }
+      #speak, #status, textarea { scroll-margin-bottom: calc(8rem + env(safe-area-inset-bottom)); }
+      #output { position: sticky; bottom: 0; z-index: 2; padding-bottom: env(safe-area-inset-bottom); background: #fff; }
+      .plyr--audio .plyr__controls { flex-wrap: wrap; padding: 8px; }
+      .plyr .plyr__controls > .plyr__progress__container { order: -1; flex: 0 0 100%; margin: 0; padding: 0; }
+      .plyr .plyr__progress input { min-height: 44px; }
+      .plyr .plyr__controls > .plyr__control:first-child { margin-right: 0; }
+      .plyr .plyr__controls > .plyr__menu { margin-left: auto; }
+      .plyr .plyr__time--duration { display: none; }
+    }
   </style>
 </head>
 <body>
@@ -51,6 +71,6 @@
     <button id="new-session" type="button" disabled>New session</button>
     <a class="source" href="https://github.com/stutxo/narrate.sh" target="_blank" rel="noopener noreferrer">GitHub</a>
   </main>
-  <script type="module" src="./app.js?v=9"></script>
+  <script type="module" src="./app.js?v=10"></script>
 </body>
 </html>

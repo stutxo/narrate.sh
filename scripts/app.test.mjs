@@ -316,7 +316,7 @@ test("pause, seek, stop, reload and resume preserve one saved narration", { time
   assert(Math.abs((await audioState(page)).time - 1.35) < .05, "Reload restores the global seek position");
   assert.equal((await audioState(page)).duration, 2.4);
   assert.equal((await audioState(page)).rate, 1.5, "Reload preserves playback speed");
-  assert.equal(await page.locator("#text").isDisabled(), true);
+  assert.equal(await page.locator("#text").isEditable(), false, "Saved text remains locked to the audio while allowing selection");
   await page.locator("#speak").click();
   await reply(page); await reply(page);
   await waitStopped(page);

@@ -156,9 +156,9 @@ export async function openApp(environment, options = {}) {
   let releasePlyr;
   if (options.delayPlyr) {
     const gate = new Promise(resolve => { releasePlyr = resolve; });
-    await page.route("**/plyr@3.8.4/+esm", async route => { await gate; await route.continue(); });
+    await page.route("**/vendor/plyr/plyr.js*", async route => { await gate; await route.continue(); });
   }
-  await page.goto(environment.url, { waitUntil: "domcontentloaded" });
+  await page.goto(environment.url + (options.diagnostics ? '/?diagnostics=1' : ''), { waitUntil: "domcontentloaded" });
   if (options.fault !== "open") await page.waitForFunction(() => !document.querySelector("#text").disabled);
   return { page, context, errors, failedRequests, releasePlyr, close: () => context.close() };
 }

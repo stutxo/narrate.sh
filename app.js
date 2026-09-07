@@ -1,4 +1,5 @@
-import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=9";
+import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=10";
+import { setupPlayer } from "./player-controls.js?v=10";
 
 const $ = (id) => document.getElementById(id);
 const text = $("text"), button = $("speak"), status = $("status"), audio = $("audio");
@@ -9,6 +10,8 @@ let writes = Promise.resolve(), saveTimer, lastPositionSave = 0, wakeLock;
 let savedText, savedParts, savedPosition, savedRate;
 let streamConfig, streaming, playbackError, playAfterStop = false;
 let playbackWanted = false, playBlocked = false, statusMessage = status.textContent;
+const diagnostics = new URLSearchParams(location.search).get('diagnostics') === '1'
+  ? (await import('./diagnostics.js?v=10')).setupDiagnostics(audio) : null;
 
 function say(message = statusMessage) {
   statusMessage = message;
@@ -67,7 +70,8 @@ function words() { return text.value.trim().split(/\s+/u).filter(Boolean).length
 function render() {
   const count = words(), complete = session.parts.length > 0 && session.generated === session.parts.length;
   $("word-count").textContent = `${count.toLocaleString()} ${count === 1 ? "word" : "words"}`;
-  text.disabled = !database || running || session.generated > 0;
+  text.disabled = !database;
+  text.readOnly = running || session.generated > 0;
   button.disabled = !database || !gpuReady || cancelled && running || !running && (!count || complete);
   button.textContent = running ? "Stop generation" : complete ? "Ready to play" : session.generated ? "Resume generation" : "Read aloud";
   $("new-session").disabled = !database || running || !session.text;
@@ -185,7 +189,7 @@ function closeWorker() {
 }
 function synthesize(value) {
   if (!worker) {
-    worker = new Worker("./speech-worker.js?v=9", { type: "module" });
+    worker = new Worker("./speech-worker.js?v=10", { type: "module" });
     worker.onmessage = ({ data }) => {
       if (!pending || data.id !== pending.id) return;
       if (data.type === "status") {
@@ -195,7 +199,10 @@ function synthesize(value) {
       const job = pending;
       pending = null;
       if (data.type === "audio") {
-        if (data.pcm instanceof Uint8Array && data.pcm.byteLength) job.resolve(data);
+        if (data.pcm instanceof Uint8Array && data.pcm.byteLength) {
+          diagnostics?.chunk(data, performance.now() - job.started);
+          job.resolve(data);
+        }
         else job.reject(new Error("The speech engine returned no audio. Resume to try again."));
       } else job.reject(new Error(data.message || "Speech generation failed."));
     };
@@ -205,7 +212,7 @@ function synthesize(value) {
     };
   }
   return new Promise((resolve, reject) => {
-    pending = { id: ++jobId, resolve, reject };
+    pending = { id: ++jobId, resolve, reject, started: performance.now() };
     worker.postMessage({ type: "generate", id: jobId, text: value });
   });
 }
@@ -231,6 +238,7 @@ async function generate() {
     session.text = text.value.trim();
     session.parts = splitText(session.text);
   }
+  diagnostics?.start({ passages: session.parts.length, resumedPassages: session.generated, playbackRate: session.rate });
   render();
   void stayAwake();
   try {
@@ -277,6 +285,7 @@ async function generate() {
       $("output").hidden = true;
     }
     running = false;
+    diagnostics?.finish(cancelled ? 'stopped' : generationError || playbackError ? 'error' : 'ready');
     if (cancelled) say("Stopped. Your progress is saved.");
     await wakeLock?.release().catch(() => {});
     wakeLock = null;
@@ -322,6 +331,7 @@ $("new-session").addEventListener("click", async () => {
   audioUrl = null;
   loadingAudio = false;
   session = freshSession();
+  diagnostics?.clear();
   text.value = "";
   $("output").hidden = true;
   render();
@@ -358,14 +368,6 @@ document.addEventListener("visibilitychange", () => { savePosition(); void stayA
 window.addEventListener("pagehide", savePosition);
 window.addEventListener("pageshow", (event) => { if (event.persisted) location.reload(); });
 
-// Plyr is presentation only; generation and saved playback also work if its CDN is unavailable.
-void import("https://cdn.jsdelivr.net/npm/plyr@3.8.4/+esm").then(({ default: Plyr }) => {
-  const player = new Plyr(audio, { iconUrl: "https://cdn.jsdelivr.net/npm/plyr@3.8.4/dist/plyr.svg", controls: ["play", "progress", "current-time", "duration", "settings"], settings: ["speed"], storage: { enabled: false }, speed: { selected: session.rate, options: [0.75, 1, 1.25, 1.5, 2] } });
-  // Plyr retains a clone for destroy(); a MediaSource URL cannot feed two elements.
-  player.elements.original.removeAttribute("src");
-  player.elements.original.load();
-}).catch(() => {});
-
 try {
   // One tab owns the current session; other tabs wait without changing its data.
   // The browser releases this lock when the owning page closes or reloads.
@@ -388,6 +390,8 @@ try {
   const store = database.transaction("current").objectStore("current");
   const [saved, input] = await Promise.all([result(store.get("session")), result(store.get("input"))]);
   session = { ...freshSession(), ...saved, ...input };
+  audio.playbackRate = session.rate;
+  void setupPlayer(audio);
   text.value = session.text;
   await save();
   say("Checking WebGPU…");
@@ -397,6 +401,7 @@ try {
   ]);
   streamConfig = config;
   gpuReady = Boolean(adapter);
+  diagnostics?.environment({ webgpu: gpuReady, shaderF16: Boolean(adapter?.features?.has('shader-f16')), codec: config?.codec ?? null });
   say(gpuReady ? "Ready. Your current session is saved automatically." : "WebGPU is unavailable. Use Safari 26+ or another WebGPU-capable browser.");
   if (session.generated) await showAudio();
 } catch (error) { report(error); }

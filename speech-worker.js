@@ -1,4 +1,4 @@
-import { KittenTTSEngine, textToInputIds } from './vendor/kitten/runtime.js?v=9';
+import { KittenTTSEngine, textToInputIds } from './vendor/kitten/runtime.js?v=10';
 
 const model = 'https://huggingface.co/KittenML/kitten-tts-micro-0.8/resolve/1ccf72b2c2048fd17efac7de2fab32d10e225084/';
 let engine, activeId, failure;
@@ -32,24 +32,31 @@ function fail(message) {
 addEventListener('webgpu-device-lost', () => fail('The GPU connection was interrupted. Resume to continue.'));
 addEventListener('webgpu-error', event => fail(`The GPU could not generate speech. ${event.detail}`));
 
-onmessage = async ({ data: { type, id, text } }) => {
+onmessage = async ({ data: { type, id, text, synthesisRate = 1 } }) => {
   if (type !== 'generate') return;
   if (failure) return postMessage({ type: 'error', id, message: failure });
   if (activeId !== undefined) return fail('Speech generation is already running. Resume to continue.');
   activeId = id;
+  const started = performance.now();
+  let initMs = 0;
   const status = message => postMessage({ type: 'status', id, message });
   try {
     if (!text?.trim()) throw new Error('Add some text first.');
+    if (![1, 1.2, 1.5].includes(synthesisRate)) throw new Error('Choose a synthesis rate of 1, 1.2, or 1.5.');
     if (!engine) {
+      const initStarted = performance.now();
       status('Starting WebGPU…');
       engine = new KittenTTSEngine();
       await engine.init();
       status('Loading Kitten Micro (45 MB)…');
       await engine.loadModel(model + 'kitten_tts_micro_v0_8.onnx', model + 'voices.npz');
+      initMs = performance.now() - initStarted;
     }
     status('Generating speech…');
+    const generationStarted = performance.now();
     const input = spokenText(text);
-    const samples = await generatePassage(input);
+    const samples = await generatePassage(input, synthesisRate);
+    const generationMs = performance.now() - generationStarted;
     if (!(samples instanceof Float32Array) || !samples.length) throw new Error('The GPU returned no audio. Resume to try again.');
     const pcm = new Uint8Array(samples.length * 2), view = new DataView(pcm.buffer);
     for (let i = 0; i < samples.length; i++) {
@@ -58,7 +65,9 @@ onmessage = async ({ data: { type, id, text } }) => {
       view.setInt16(i * 2, Math.round(sample * (sample < 0 ? 32768 : 32767)), true);
     }
     if (failure) return;
-    postMessage({ type: 'audio', id, pcm, sampleRate: 24000 }, [pcm.buffer]);
+    const metrics = { initMs, generationMs, totalMs: performance.now() - started,
+      audioSeconds: samples.length / 24000, synthesisRate };
+    postMessage({ type: 'audio', id, pcm, sampleRate: 24000, metrics }, [pcm.buffer]);
   } catch (error) {
     console.error(error);
     fail(error.message || 'Speech generation failed. Resume to try again.');
@@ -67,7 +76,7 @@ onmessage = async ({ data: { type, id, text } }) => {
   }
 };
 
-async function generatePassage(text) {
+async function generatePassage(text, synthesisRate) {
   if (failure) throw new Error(failure);
   const { ids } = await textToInputIds(text);
   // Number expansion can make a short passage exceed the model's context.
@@ -75,13 +84,13 @@ async function generatePassage(text) {
   if (ids.length > 510) {
     const middle = Math.floor(text.length / 2);
     const split = text.lastIndexOf(' ', middle) > 0 ? text.lastIndexOf(' ', middle) : middle;
-    const left = await generatePassage(text.slice(0, split));
-    const right = await generatePassage(text.slice(split));
+    const left = await generatePassage(text.slice(0, split), synthesisRate);
+    const right = await generatePassage(text.slice(split), synthesisRate);
     const audio = new Float32Array(left.length + right.length);
     audio.set(left);
     audio.set(right, left.length);
     return audio;
   }
   if (ids.length < 3) return new Float32Array(2400); // A punctuation-only pause.
-  return (await engine.generate(ids, 'Bella', 1, text.length)).waveform;
+  return (await engine.generate(ids, 'Bella', synthesisRate, text.length)).waveform;
 }

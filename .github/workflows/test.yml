@@ -24,9 +24,9 @@ jobs:
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         run: |
           mkdir -p _site/scripts
-          cp index.html app.js speech-worker.js streaming-player.js _site/
+          cp index.html app.js speech-worker.js streaming-player.js player-controls.js diagnostics.js _site/
           cp -R vendor _site/
-          cp scripts/check-playback.html _site/scripts/
+          cp scripts/check-playback.html scripts/audition.html scripts/audition.js scripts/audition-utils.js _site/scripts/
       - name: Upload the tested site
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
