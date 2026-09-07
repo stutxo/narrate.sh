@@ -1,12 +1,33 @@
 import { auditionPlan, pcmStats, wavBytes } from './audition-utils.js';
 
 const $ = id => document.getElementById(id);
-let worker, pending, serial = 0, running = false, revealed = false;
+let worker, pending, wake, serial = 0, running = false, revealed = false;
 const artifacts = [], urls = [];
 function status(text) { $('status').textContent = text; }
+async function holdScreen() {
+  const session = wake;
+  if (!session?.active || session.lock || session.pending || document.visibilityState !== 'visible' || !navigator.wakeLock) return;
+  session.pending = true;
+  try {
+    const lock = await navigator.wakeLock.request('screen');
+    if (!session.active || document.visibilityState !== 'visible') { await lock.release(); return; }
+    session.lock = lock;
+    lock.addEventListener('release', () => { if (session.lock === lock) session.lock = undefined; });
+  } catch {} // Unsupported or denied wake locks must not prevent an audition.
+  finally { session.pending = false; }
+}
+document.addEventListener('visibilitychange', () => {
+  if (!wake?.active) return;
+  if (document.visibilityState === 'visible') holdScreen();
+  else wake.report.backgrounded = true;
+});
 function stop() {
   worker?.terminate(); worker = undefined;
   pending?.reject(new Error('Audition stopped.')); pending = undefined;
+  if (wake) {
+    wake.active = false;
+    wake.lock?.release().catch(() => {}); wake.lock = undefined;
+  }
 }
 function generate(text, synthesisRate, label) {
   status(label);
@@ -47,14 +68,18 @@ async function run(options = {}) {
   urls.splice(0).forEach(url => URL.revokeObjectURL(url)); artifacts.length = 0; $('results').replaceChildren();
   const report = window.audition.report = {
     version: 1, createdAt: new Date().toISOString(), userAgent: navigator.userAgent,
-    isolated: crossOriginIsolated, seed: plan.seed, targetRate: plan.targetRate, repeats: plan.repeats,
+    isolated: crossOriginIsolated, backgrounded: document.visibilityState !== 'visible',
+    seed: plan.seed, targetRate: plan.targetRate, repeats: plan.repeats,
     corpus: plan.corpus, warmups: [], results: [],
     notes: ['Timings use the real worker. Warmups are excluded from results.',
       'Words count the source passage, before number expansion.',
       'Signal checks detect malformed or suspect audio, not pronunciation or listening quality.',
       'Raw WAV files require the recorded playbackRate for matched nominal listening pace.',
+      'If backgrounded is true, browser throttling may have affected these timings.',
       'A single repeat and software GPU timings cannot establish phone performance.'],
   };
+  wake = { active: true, report };
+  holdScreen();
   try {
     if (!navigator.gpu) throw new Error('This browser does not expose WebGPU.');
     worker = new Worker(new URL('../speech-worker.js?v=10', import.meta.url), { type: 'module' });

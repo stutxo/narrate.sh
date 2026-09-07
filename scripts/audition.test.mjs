@@ -47,8 +47,20 @@ test('signal checks and WAV export preserve PCM subarrays without claiming speec
 
 // Replace only speech arrival. WAV parsing, media controls, and object URLs stay native.
 function installSpeech() {
-  const controls = window.__auditionTest = { requests: [], workers: [], liveUrls: new Set(), mode: 'auto', holdAfter: Infinity };
+  const controls = window.__auditionTest = { requests: [], workers: [], liveUrls: new Set(), mode: 'auto', holdAfter: Infinity,
+    wakeLocks: [], wakeRequests: 0, wakeMode: 'auto', visibility: 'visible' };
   Object.defineProperty(navigator, 'gpu', { configurable: true, value: {} });
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => controls.visibility });
+  Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request: async type => {
+    if (type !== 'screen') throw new Error('Unexpected wake lock type.');
+    controls.wakeRequests++;
+    if (controls.wakeMode === 'denied') throw new DOMException('Wake lock denied.', 'NotAllowedError');
+    const lock = new EventTarget(); lock.released = false;
+    lock.release = async () => { lock.released = true; lock.dispatchEvent(new Event('release')); };
+    controls.wakeLocks.push(lock);
+    if (controls.wakeMode === 'late') await new Promise(resolve => { controls.resolveWake = resolve; });
+    return lock;
+  } } });
   const create = URL.createObjectURL.bind(URL), revoke = URL.revokeObjectURL.bind(URL);
   URL.createObjectURL = value => { const url = create(value); controls.liveUrls.add(url); return url; };
   URL.revokeObjectURL = url => { controls.liveUrls.delete(url); revoke(url); };
@@ -68,7 +80,7 @@ function installSpeech() {
         }
         const initMs = this.calls === 1 ? 2000 : 0;
         this.onmessage?.({ data: { type: 'audio', id: message.id, pcm, sampleRate: 24000,
-          metrics: { initMs, generationMs: 100, totalMs: initMs + 120,
+          metrics: controls.mode === 'protocol' ? undefined : { initMs, generationMs: 100, totalMs: initMs + 120,
             audioSeconds: samples / 24000, synthesisRate: message.synthesisRate } } });
       });
     }
@@ -93,6 +105,9 @@ test('the browser audition excludes warmups and plays native WAVs at matched nom
   const { page, errors } = await openAudition(t);
   const report = await page.evaluate(options => window.audition.run(options), quickPlan);
   assert.equal(report.warmups.length, 3); assert.equal(report.results.length, 3);
+  assert.equal(report.backgrounded, false);
+  assert.equal(await page.evaluate(() => window.__auditionTest.wakeRequests), 1);
+  assert(await page.evaluate(() => window.__auditionTest.wakeLocks.every(lock => lock.released)), 'Completion releases the screen.');
   assert.equal(await page.evaluate(() => window.__auditionTest.requests.length), 6);
   assert.equal(report.results.reduce((sum, row) => sum + row.initMs, 0), 0);
   assert.equal(report.warmups.reduce((sum, row) => sum + row.initMs, 0), 2000);
@@ -132,6 +147,17 @@ test('Stop and worker failures remain failures, and rerunning releases prior aud
   assert.equal(await page.evaluate(() => window.__auditionTest.liveUrls.size), 1, 'Old comparison URLs are revoked on rerun.');
   assert.deepEqual(await page.locator('audio').evaluate(audio => ({ controls: audio.controls, inert: audio.inert, paused: audio.paused })),
     { controls: false, inert: true, paused: true }, 'Listening is held until timing completes to avoid biasing later samples.');
+  assert(await page.evaluate(() => window.__auditionTest.wakeLocks.some(lock => !lock.released)), 'Active generation holds the screen awake.');
+  const wakeRequests = await page.evaluate(async () => {
+    const controls = window.__auditionTest;
+    controls.visibility = 'hidden';
+    await controls.wakeLocks.at(-1).release(); // Browsers release screen locks when hidden.
+    document.dispatchEvent(new Event('visibilitychange'));
+    controls.visibility = 'visible'; document.dispatchEvent(new Event('visibilitychange'));
+    return controls.wakeRequests;
+  });
+  assert.equal(wakeRequests, 3, 'Returning to the active audition reacquires the released lock.');
+  assert.equal(await page.evaluate(() => window.audition.report.backgrounded), true);
   await page.locator('#stop').click();
   await page.waitForFunction(() => window.__run !== null);
   assert.match(await page.evaluate(() => window.__run), /stopped/i);
@@ -139,6 +165,13 @@ test('Stop and worker failures remain failures, and rerunning releases prior aud
   assert.equal(await page.locator('#fields').isDisabled(), false);
   assert.equal(await page.locator('#stop').isVisible(), false);
   assert(await page.evaluate(() => window.__auditionTest.workers.every(worker => worker.dead)));
+  assert(await page.evaluate(() => window.__auditionTest.wakeLocks.every(lock => lock.released)), 'Stop releases every acquired lock.');
+  assert.equal(await page.evaluate(() => {
+    const controls = window.__auditionTest;
+    controls.visibility = 'hidden'; document.dispatchEvent(new Event('visibilitychange'));
+    controls.visibility = 'visible'; document.dispatchEvent(new Event('visibilitychange'));
+    return controls.wakeRequests;
+  }), wakeRequests, 'Visibility changes after Stop must not reacquire a lock.');
   const failed = await page.evaluate(async options => {
     window.__auditionTest.mode = 'error'; window.__auditionTest.holdAfter = Infinity;
     try { await window.audition.run(options); return 'success'; } catch (error) { return error.message; }
@@ -146,6 +179,13 @@ test('Stop and worker failures remain failures, and rerunning releases prior aud
   assert.equal(failed, 'Injected speech failure.');
   assert.equal(await page.locator('#status').textContent(), failed);
   assert.equal(await page.evaluate(() => window.__auditionTest.liveUrls.size), 0);
+  assert(await page.evaluate(() => window.__auditionTest.wakeLocks.every(lock => lock.released)), 'Worker failure releases the screen.');
+  const protocolFailure = await page.evaluate(async options => {
+    window.__auditionTest.mode = 'protocol';
+    try { await window.audition.run(options); return 'success'; } catch (error) { return error.message; }
+  }, quickPlan);
+  assert.match(protocolFailure, /worker protocol/i);
+  assert(await page.evaluate(() => window.__auditionTest.wakeLocks.every(lock => lock.released)), 'Malformed responses also release the screen.');
   const silence = await page.evaluate(async options => {
     window.__auditionTest.mode = 'silence';
     try { await window.audition.run(options); return 'success'; } catch (error) { return error.message; }
@@ -153,10 +193,21 @@ test('Stop and worker failures remain failures, and rerunning releases prior aud
   assert.match(silence, /silent audio/i, 'Structurally valid silent PCM cannot finish as a successful audition.');
   assert.equal(await page.evaluate(() => window.audition.report.results.length), 0);
   const recovered = await page.evaluate(options => {
-    window.__auditionTest.mode = 'auto';
+    window.__auditionTest.mode = 'auto'; window.__auditionTest.wakeMode = 'denied';
     return window.audition.run(options);
   }, quickPlan);
   assert.equal(recovered.results.length, 3); assert.equal(recovered.error, undefined);
   assert.equal(await page.evaluate(() => window.__auditionTest.liveUrls.size), 3);
+  assert.equal(recovered.backgrounded, false, 'A fresh run resets the background warning; denied wake locks do not block speech.');
+  await page.evaluate(options => {
+    window.__auditionTest.mode = 'hold'; window.__auditionTest.wakeMode = 'late'; window.__run = null;
+    window.audition.run(options).catch(error => { window.__run = error.message; });
+  }, quickPlan);
+  await page.waitForFunction(() => Boolean(window.__auditionTest.resolveWake));
+  await page.locator('#stop').click();
+  await page.waitForFunction(() => window.__run !== null);
+  await page.evaluate(() => window.__auditionTest.resolveWake());
+  await page.waitForFunction(() => window.__auditionTest.wakeLocks.every(lock => lock.released));
+  assert.match(await page.evaluate(() => window.__run), /stopped/i, 'An acquisition completed after Stop is released immediately.');
   assert.deepEqual(errors, []);
 });
