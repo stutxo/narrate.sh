@@ -1,4 +1,4 @@
-import { AUDIO } from '../model-config.js?v=12';
+import { AUDIO } from '../model-config.js?v=16';
 import { KittenTTSEngine, textToInputIds } from '../vendor/kitten/runtime.js?v=11';
 
 // The dictionary frontend has no numeric tokens. Expand numbers before it sees

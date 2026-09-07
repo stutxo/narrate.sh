@@ -6,6 +6,19 @@ let environment;
 before(async () => { environment = await startBrowser(); });
 after(async () => { await environment?.close(); });
 
+test("narration keeps text selectable while generating and after completion", async t => {
+  const app = await openApp(environment);
+  t.after(app.close);
+  await begin(app.page, PASSAGE);
+  assert.deepEqual(await app.page.locator("#text").evaluate(text => ({ disabled: text.disabled, readOnly: text.readOnly })),
+    { disabled: false, readOnly: true });
+  await reply(app.page); await waitStopped(app.page);
+  assert.equal(await app.page.locator("#text").evaluate(text => text.readOnly), true);
+  await app.page.locator("#new-session").click();
+  assert.equal(await app.page.locator("#text").isEditable(), true);
+  cleanErrors(app.errors);
+});
+
 test("speech builds a head start, refills after starvation, and respects Pause", { timeout: 25000 }, async t => {
   const app = await openApp(environment, { seconds: 8 });
   t.after(app.close);

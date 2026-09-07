@@ -1,6 +1,6 @@
-import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=15";
-import { setupPlayer } from "./player-controls.js?v=15";
-import { MODEL } from "./model-config.js?v=15";
+import { getStreamConfig, StreamingPlayer } from "./streaming-player.js?v=16";
+import { setupPlayer } from "./player-controls.js?v=16";
+import { MODEL } from "./model-config.js?v=16";
 
 const $ = (id) => document.getElementById(id);
 const text = $("text"), button = $("speak"), status = $("status"), audio = $("audio");
@@ -15,8 +15,6 @@ let savedText, savedParts, savedPosition, savedRate;
 let streamConfig, streaming, playbackError, playAfterStop = false;
 let playbackWanted = false, playBlocked = false, statusMessage = status.textContent;
 let replacingSession = false;
-const diagnostics = new URLSearchParams(location.search).get('diagnostics') === '1'
-  ? (await import('./diagnostics.js?v=15')).setupDiagnostics(audio) : null;
 
 function say(message = statusMessage) {
   statusMessage = message;
@@ -196,7 +194,7 @@ function closeWorker() {
 }
 function synthesize(value) {
   if (!worker) {
-    worker = new Worker("./speech-worker.js?v=15", { type: "module" });
+    worker = new Worker("./speech-worker.js?v=16", { type: "module" });
     worker.onmessage = ({ data }) => {
       if (!pending || data.id !== pending.id) return;
       if (data.type === "status") {
@@ -207,10 +205,7 @@ function synthesize(value) {
       pending = null;
       if (data.type === "audio") {
         if (data.modelId !== MODEL.id) job.reject(new Error("The speech model has changed. Reload this page to continue."));
-        else if (data.pcm instanceof Uint8Array && data.pcm.byteLength) {
-          diagnostics?.chunk(data, performance.now() - job.started, job.sourceCharacters);
-          job.resolve(data);
-        }
+        else if (data.pcm instanceof Uint8Array && data.pcm.byteLength) job.resolve(data);
         else job.reject(new Error("The speech engine returned no audio. Resume to try again."));
       } else job.reject(new Error(data.message || "Speech generation failed."));
     };
@@ -220,7 +215,7 @@ function synthesize(value) {
     };
   }
   return new Promise((resolve, reject) => {
-    pending = { id: ++jobId, resolve, reject, started: performance.now(), sourceCharacters: value.length };
+    pending = { id: ++jobId, resolve, reject };
     worker.postMessage({ type: "generate", id: jobId, text: value, modelId: MODEL.id });
   });
 }
@@ -256,7 +251,6 @@ async function generate() {
     session.text = text.value.trim();
     session.parts = splitText(session.text);
   }
-  diagnostics?.start({ passages: session.parts.length, resumedPassages: session.generated, playbackRate: session.rate });
   render();
   void stayAwake();
   try {
@@ -315,7 +309,6 @@ async function generate() {
       $("output").hidden = true;
     }
     running = false;
-    diagnostics?.finish(cancelled ? 'stopped' : generationError || playbackError ? 'error' : 'ready');
     if (cancelled) say("Stopped. Your progress is saved.");
     await wakeLock?.release().catch(() => {});
     wakeLock = null;
@@ -365,7 +358,6 @@ $("new-session").addEventListener("click", async () => {
   clearTimeout(saveTimer);
   resetAudio();
   session = freshSession();
-  diagnostics?.clear();
   text.value = "";
   $("output").hidden = true;
   render();
@@ -437,8 +429,6 @@ try {
   ]);
   streamConfig = config;
   gpuReady = Boolean(adapter);
-  diagnostics?.environment({ backend: MODEL.backend, webgpu: gpuReady,
-    shaderF16: Boolean(adapter?.features?.has('shader-f16')), codec: config?.codec ?? null, model: MODEL.id });
   say(gpuReady ? "Ready. Your current session is saved automatically." : "WebGPU is unavailable. Use Safari 26+ or another WebGPU-capable browser.");
   if (modelChanged() && gpuReady) say('Saved audio is ready. Read aloud again to use the current model.');
   if (session.generated) await showAudio();

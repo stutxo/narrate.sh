@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
-import { MODEL as POCKET } from '../models/pocket-config.js';
+import { MODEL } from '../model-config.js';
 import { startBrowser, openApp, session, waitSession, reply, audioState, PASSAGE, begin, waitStopped, cleanErrors } from './app-fixtures.mjs';
 
 let environment, configSource;
@@ -11,6 +11,7 @@ before(async () => {
 });
 after(async () => { await environment?.close(); });
 
+const previousModelId = 'previous-recording-generation';
 const replacementRevision = '1111111111111111111111111111111111111111';
 const text = ['The first reader', 'The second reader', 'The final reader']
   .map(opening => PASSAGE.replace('The reader', opening)).join(' ');
@@ -88,7 +89,7 @@ test('changing only the model label loads metadata and preserves Resume compatib
   assert.match(await page.locator('.lede').textContent(), /Renamed Micro/);
   assert.equal(await page.locator('#speak').textContent(), 'Resume generation');
   await assertPreserved(page, saved);
-  assert.deepEqual(requests.filter(url => /\/models\/|\/vendor\/(?:kitten|pocket)\/|huggingface\.co|speech-worker\.js/.test(url)), [],
+  assert.deepEqual(requests.filter(url => /\/models\/|\/vendor\/kitten\/|huggingface\.co|speech-worker\.js/.test(url)), [],
     'Opening the app reads model metadata without importing its adapter, inference runtime, or weights');
   await page.locator('#speak').click();
   await page.waitForFunction(() => window.__speech.requests.length > 0);
@@ -98,10 +99,10 @@ test('changing only the model label loads metadata and preserves Resume compatib
   cleanErrors(errors);
 });
 
-test('saved Pocket audio stays playable until the user regenerates it with Kitten', { timeout: 15000 }, async t => {
+test('saved audio from another model stays playable until the user regenerates it', { timeout: 15000 }, async t => {
   const app = await openApp(environment, { seconds: 4 }); t.after(app.close);
   const { page, errors } = app;
-  const saved = { ...await recording(page), model: POCKET.id };
+  const saved = { ...await recording(page), model: previousModelId };
   await page.evaluate(model => new Promise((resolve, reject) => {
     const open = indexedDB.open('narrate.sh');
     open.onerror = () => reject(open.error);
@@ -112,14 +113,14 @@ test('saved Pocket audio stays playable until the user regenerates it with Kitte
       transaction.oncomplete = () => { db.close(); resolve(); };
       transaction.onabort = () => { db.close(); reject(transaction.error); };
     };
-  }), POCKET.id);
+  }), previousModelId);
   await page.reload();
   await page.waitForFunction(() => document.querySelector('#audio').readyState >= 2 && !document.querySelector('#audio').seeking);
   assert.equal(await page.locator('#model-name').textContent(), 'Kitten Micro · WebGPU');
   assert.equal(await page.locator('#speak').textContent(), 'Read aloud again');
   await assertPreserved(page, saved);
   const replacement = await replaceFirstPassage(page, saved);
-  assert(replacement.model.includes('KittenML/kitten-tts-micro-0.8'));
+  assert.equal(replacement.model, MODEL.id);
   cleanErrors(errors);
 });
 

@@ -2,9 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { MODEL as PRODUCTION, AUDIO } from '../model-config.js';
-import { MODEL } from './models/kitten-config.js';
-import { MODEL as CPU } from '../models/pocket-config.js';
+import { MODEL, AUDIO } from '../model-config.js';
 
 const source = (await readFile(new URL('../speech-worker.js', import.meta.url), 'utf8'))
   .replace(/^import .*;\n/gm, '')
@@ -14,9 +12,8 @@ const adapterSource = (await readFile(new URL('../models/kitten.js', import.meta
 function worker(waveform, tokenize = () => [0, 1, 0], options = {}) {
   const replies = [], loads = [], imports = [], inputs = [], events = {}, calls = [], stats = { initialized: 0, generated: 0 };
   let now = 0;
-  const config = options.config || MODEL;
   const context = {
-    MODEL: config, AUDIO, Float32Array, Uint8Array, DataView, Number, onmessage: null,
+    MODEL, AUDIO, Float32Array, Uint8Array, DataView, Number, onmessage: null,
     performance: { now: () => now },
     console: { error() {} }, // Expected rejection cases should stay quiet.
     addEventListener(type, callback) { events[type] = callback; },
@@ -31,13 +28,13 @@ function worker(waveform, tokenize = () => [0, 1, 0], options = {}) {
   vm.createContext(context);
   vm.runInContext(adapterSource, context);
   context.loadAdapter = async () => {
-    imports.push(config.adapter);
+    imports.push(MODEL.adapter);
     if (options.importGate) await options.importGate;
     return { createModel: options.createModel || context.createModel };
   };
   vm.runInContext(source, context);
   return { replies, loads, imports, inputs, events, stats, calls,
-    send: (id, options = {}) => context.onmessage({ data: { type: 'generate', id, text: 'Hello world.', modelId: config.id, ...options } }),
+    send: (id, options = {}) => context.onmessage({ data: { type: 'generate', id, text: 'Hello world.', modelId: MODEL.id, ...options } }),
   };
 }
 
@@ -80,7 +77,7 @@ for (const { message, transfer } of audio) {
   assert.equal(transfer.length, 1);
   assert.equal(transfer[0], message.pcm.buffer);
 }
-for (const synthesisRate of [1, 1.2, 1.5]) {
+for (const synthesisRate of MODEL.synthesisRates) {
   const split = worker(new Float32Array([0, 0.5]), text => new Array(text.length > 8 ? 511 : 3).fill(0));
   await split.send(9, { text: 'One two three four.', synthesisRate });
   assert(split.calls.length > 1, 'Exercise actual recursive context splitting.');
@@ -91,7 +88,7 @@ for (const synthesisRate of [1, 1.2, 1.5]) {
   assert.equal(result.metrics.audioSeconds, split.calls.length * 2 / 24000);
   assert(result.metrics.generationMs > split.calls.length * 100);
 }
-for (const synthesisRate of [0, 2, 1.1, '1.2', null, NaN, Infinity]) {
+for (const synthesisRate of [0, 2, 1.1, 1.2, 1.5, '1', null, NaN, Infinity]) {
   const bad = worker(new Float32Array([0, 0.5]));
   await bad.send(10, { synthesisRate });
   assert.equal(bad.stats.initialized, 0, 'Invalid rates must not load the model.');
@@ -122,18 +119,18 @@ const numbers = worker(new Float32Array([0, 0.5]));
 await numbers.send(11, { text: 'We read 10,000 words & reached 26.5%.' });
 assert.equal(numbers.inputs[0].replace(/\s+/g, ' ').trim(), 'We read ten thousand words and reached twenty six point five percent .');
 
-// A different architecture can implement the boundary without invoking Kitten.
+// Validate the adapter result boundary independently of inference.
 const replacements = [];
 const replacement = worker(undefined, undefined, { createModel: async ({ config, status }) => {
-  assert.equal(config, MODEL); status('Loading a replacement adapter…');
+  assert.equal(config, MODEL); status('Loading the adapter…');
   return { async generate(text, rate) {
     replacements.push({ text, rate });
     return { samples: new Float32Array([-.5, .5]), ...AUDIO };
   } };
 } });
-await replacement.send(12, { text: 'Different architecture.', synthesisRate: 1.2 });
-assert.deepEqual(replacements, [{ text: 'Different architecture.', rate: 1.2 }]);
-assert.equal(replacement.stats.initialized, 0, 'Replacement adapters do not load Kitten.');
+await replacement.send(12, { text: 'Adapter boundary.', synthesisRate: MODEL.defaultRate });
+assert.deepEqual(replacements, [{ text: 'Adapter boundary.', rate: MODEL.defaultRate }]);
+assert.equal(replacement.stats.initialized, 0, 'The worker invokes only the adapter returned by the lazy import.');
 assert.equal(replacement.replies.at(-1).message.modelId, MODEL.id);
 assert.equal(replacement.replies.at(-1).message.pcm.byteLength, 4);
 for (const format of [{ sampleRate: 48000, channels: 1 }, { sampleRate: 24000, channels: 2 }]) {
@@ -170,41 +167,20 @@ const failedFrontend = worker(new Float32Array([0, .5]), () => {
 await failedFrontend.send(17);
 assert.equal(failedFrontend.stats.generated, 0, 'GPU loss during asynchronous text preparation must not launch inference.');
 
-// Optional CPU comparisons retain the same lazy, strict worker boundary.
-const production = worker(undefined, undefined, { config: CPU, createModel: async ({ config, status }) => {
-  assert.equal(config, CPU); status('Starting CPU…');
-  return { generate: async (text, rate) => {
-    assert.equal(text, 'Hello world.'); assert.equal(rate, 1);
-    return { samples: new Float32Array([-.5, .5]), ...AUDIO };
-  } };
-} });
-assert.equal(production.imports.length, 0);
-await production.send(18);
-assert.deepEqual(production.imports, [CPU.adapter]);
-assert.equal(production.stats.initialized, 0, 'Optional CPU generation does not initialize the historical GPU engine.');
-assert.equal(production.replies.at(-1).message.modelId, CPU.id);
-assert.equal(production.replies.at(-1).message.pcm.byteLength, 4);
-const invalidProductionRate = worker(undefined, undefined, { config: PRODUCTION });
-await invalidProductionRate.send(19, { synthesisRate: 2 });
-assert.equal(invalidProductionRate.imports.length, 0, 'Unsupported production rates cannot load any engine.');
-assert.equal(invalidProductionRate.replies.at(-1).message.type, 'error');
-
-const rootConfigSource = await readFile(new URL('../model-config.js', import.meta.url), 'utf8');
-const configSource = rootConfigSource;
-assert(!/^\s*import\b/m.test(rootConfigSource) && !/\bimport\s*\(/.test(rootConfigSource), 'UI metadata cannot load an inference runtime.');
-assert(!/^\s*import\b/m.test(configSource) && !/\bimport\s*\(/.test(configSource), 'The reexported model configuration is metadata only.');
+const configSource = await readFile(new URL('../model-config.js', import.meta.url), 'utf8');
+assert(!/^\s*import\b/m.test(configSource) && !/\bimport\s*\(/.test(configSource), 'UI metadata cannot load an inference runtime.');
 assert.deepEqual(AUDIO, { sampleRate: 24000, channels: 1 });
-assert.equal(PRODUCTION.backend, 'webgpu');
-assert.equal(PRODUCTION.voice, 'Bella');
-assert.equal(PRODUCTION.id, MODEL.id, 'Restored production keeps the historical Kitten generation identity.');
-assert.match(PRODUCTION.revision, /^[a-f0-9]{40}$/);
-assert.deepEqual(PRODUCTION.synthesisRates, [1, 1.2, 1.5]);
-for (const [from, to] of [[PRODUCTION.revision, '0'.repeat(40)], [PRODUCTION.voice, 'Another voice'],
-  [PRODUCTION.adapter, PRODUCTION.adapter.replace('v=', 'v=next-')]]) {
+assert.equal(MODEL.backend, 'webgpu');
+assert.equal(MODEL.voice, 'Bella');
+assert.match(MODEL.revision, /^[a-f0-9]{40}$/);
+assert.equal(MODEL.defaultRate, 1);
+assert(MODEL.synthesisRates.includes(MODEL.defaultRate));
+for (const [from, to] of [[MODEL.revision, '0'.repeat(40)], [MODEL.voice, 'Another voice'],
+  [MODEL.adapter, MODEL.adapter.replace('v=', 'v=next-')]]) {
   const changed = vm.runInNewContext(configSource.replaceAll('export const ', 'const ').replaceAll(from, to) + '\nMODEL;');
-  assert.notEqual(changed.id, PRODUCTION.id, 'Weights, voice and adapter changes update generation identity.');
+  assert.notEqual(changed.id, MODEL.id, 'Weights, voice and adapter changes update generation identity.');
 }
 const relabelled = vm.runInNewContext(configSource.replaceAll('export const ', 'const ')
-  .replace(`name: '${PRODUCTION.name}'`, "name: 'A clearer UI label'") + '\nMODEL;');
-assert.equal(relabelled.id, PRODUCTION.id, 'UI-only labels do not invalidate saved generation.');
-console.log('Worker passed: Kitten production and optional CPU adapters, configuration identity, canonical PCM, timings and failure races.');
+  .replace(`name: '${MODEL.name}'`, "name: 'A clearer UI label'") + '\nMODEL;');
+assert.equal(relabelled.id, MODEL.id, 'UI-only labels do not invalidate saved generation.');
+console.log('Worker passed: Kitten adapter, configuration identity, canonical PCM, timings and failure races.');

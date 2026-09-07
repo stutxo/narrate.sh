@@ -9,10 +9,9 @@ const model = {
   voice: 'Bella',
   tokenLimit: 510,
   downloadMB: 45,
-  synthesisRates: Object.freeze([1, 1.2, 1.5]),
+  synthesisRates: Object.freeze([1]),
   defaultRate: 1,
   backend: 'webgpu',
-  backendLabel: 'WebGPU',
 };
 export const MODEL = Object.freeze({ ...model,
   // Adapter compatibility version changes with runtime/frontend behavior,

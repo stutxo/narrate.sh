@@ -1,81 +1,67 @@
 # narrate.sh
 
-Use it at [narrate.sh](https://narrate.sh/).
+[Paste text and listen at narrate.sh](https://narrate.sh/).
 
-A small, static text reader: Kitten Micro on WebGPU, a Plyr audio player, and one saved session. English only. Text is generated in short passages without a fixed word cap; longer narrations take more time and browser storage. There is no WASM inference fallback, history list, or download/export feature.
+A static, English text reader using **Kitten Micro / Bella on WebGPU**. The model and voices download about **45 MB** on first use and are cached when browser storage permits. Text and audio stay in your browser.
 
-Serve this directory over HTTPS (or localhost). No build step is required. Keep the JavaScript files, `models/`, and `vendor/` beside `index.html`. GitHub Pages hosts the app; no custom isolation headers or shared-memory support are required. Bump the matching application import queries when releasing changed modules; model downloads keep their separate persistent cache. The adapter compatibility query is separate and changes only with generation behavior.
+Listen while speech is generated, seek through the audio that is ready, or stop and resume later. One current session saves your text, audio, playback speed, and position. New sessions start at **1×**. There is no fixed word limit; long narrations need more time and storage.
 
-- `app.js` splits text into short passages and stores each completed PCM16 audio chunk with its checkpoint in IndexedDB. It starts the next inference while saving and encoding the current passage, keeping at most one passage ahead. Resume also starts its first unfinished inference while saved audio is reloaded; the result stays uncommitted until preload completes. One native audio element and Plyr provide play/pause, speed, and a growing seekable timeline.
-- `model-config.js` selects the pinned model, voice and adapter, and supplies the UI labels. Compatible weights need a configuration update. Different architectures need a small adapter implementing the same mono 24 kHz output contract; see [Updating the speech model](MODEL_UPGRADES.md).
-- `speech-worker.js` lazily loads the configured adapter, validates its waveform, and transfers PCM16 off the main thread. `models/kitten.js` owns Micro's loading, frontend and context splitting. Model and voice downloads total approximately 45 MB and are cached when browser storage permits. The main app loads no Pocket assets. The smaller download is the reason for selecting Micro; device-specific generation speed still needs measurement. Worker timings report initialization, generation, and total elapsed durations. Production synthesis remains at speed 1; the audition tool takes supported comparison rates from the same configuration.
-- `player-controls.js` connects the same native audio element to locally hosted Plyr controls and Media Session play/pause/seek actions. The mobile player stays visible near the bottom while scrolling, with a 10-second rewind and large touch controls. Narration text becomes read-only and remains selectable.
-- `streaming-player.js` uses native audio encoding and fragmented MP4 to feed ManagedMediaSource on Safari or MediaSource elsewhere. It prefers AAC-LC, with Opus where supported. The encoder uses the exact codec profile checked for support and advertised to the player. A continuous encoder preserves chunk boundaries without repeatedly restarting audio playback. The media buffer covers a limited window around the playhead; compressed fragments allow seeking back through generated audio.
-- `vendor/kitten/` contains the adapted WebGPU runtime, pronunciation data, and notices. `vendor/media/` contains only the Mediabunny components needed for audio encoding and MP4 packaging. Rebuild them with `node scripts/vendor-kitten.mjs` and `node scripts/vendor-media.mjs` (Node 22+, tar, and network access required).
+Generation requires WebGPU, including Safari 26+ on supported iPhones. Keep the page visible while generating because mobile browsers can suspend background work. The player builds about ten seconds of listening time in reserve to reduce interruptions. Browsers without native streaming support play the completed or stopped track. Browser caches can be evicted; the site is not an offline app.
 
-New sessions default to 1× playback speed; the player can change it at any time. Playback builds roughly ten seconds of listening time in reserve before starting, adjusted for the selected speed, and rebuilds that reserve if it runs out. Generation and encoding continue during this wait. Completion, Stop, and explicit seeking release the wait so short or partial tracks remain playable. This reduces interruptions but cannot prevent them if the phone consistently generates speech more slowly than it plays. Status distinguishes preparing speech and building the audio buffer while preserving generation progress. An interrupted initial Play is retried when speech becomes available; an explicit Pause is respected. Pausing playback does not stop generation; Stop generation keeps all completed audio available. If the browser blocks automatic playback, a Play prompt remains visible alongside generation status. Browsers without the required native encoding/streaming support can still play the saved track after generation finishes or stops.
+## Run locally
 
-Text and audio stay in the browser. The pinned Plyr player, styles, and icons are served locally from `vendor/plyr/`; reproduce these files with `node scripts/vendor-plyr.mjs`. Each saved chunk is committed with its checkpoint, so Resume continues after the last completed passage. Playback speed and position survive Stop, Resume, and reload. Reloading or stopping composes the saved PCM blobs into one track without decoding the entire narration into a JavaScript sample array. Safari's ManagedMediaSource also hands off to this saved track when generation finishes, preserving playback intent, speed, and position without a refresh. Resuming generation rebuilds its temporary streaming representation from the saved chunks.
+Serve this directory over HTTP on localhost, or HTTPS elsewhere. There is no application build step or runtime npm installation. All browser code and player assets are included; model weights load from pinned Hugging Face URLs when you first generate speech.
 
-Saved audio includes its generation identity. If a later release selects different weights, voice or adapter behavior, the recording remains playable and the primary action becomes **Read aloud again**. That action regenerates the existing text from the beginning, preserving playback speed, instead of appending a different model's audio. Recordings with unknown identity also require regeneration to continue. Requests and replies verify this identity too, protecting tabs left open across a deployment. Replacement clears audio and updates its checkpoint atomically; a failed clear restores the previous playable session. A label-only release does not invalidate continuation.
+## Code map
 
-One tab owns the saved session through a Web Lock. Other tabs wait without writing to it, then open the latest saved data when the owning tab closes or navigates away. Before any audio has been saved, stopping or encountering an error leaves the text editable for another attempt.
+| File | Responsibility |
+| --- | --- |
+| `app.js` | Text splitting, generation queue, current-session storage, and playback lifecycle |
+| `model-config.js` | Pinned model, voice, generation identity, and audio format |
+| `speech-worker.js` | Lazy model loading, request validation, timing, and PCM16 transfer |
+| `models/kitten.js` | Kitten loading, number expansion, and model context splitting |
+| `streaming-player.js` | Native encoding, growing audio stream, buffering, and seeking |
+| `player-controls.js` | Plyr controls and system media controls |
+| `vendor/` | Pinned Kitten, Mediabunny, and Plyr assets with license notices |
 
-Keep the page visible while generating; a screen wake lock is requested when available. Mobile browsers can suspend background work. Playback position is saved every five seconds and on pause, seek, or leaving the page. Model caches can be unavailable or evicted, and do not make the whole website available offline.
+Generation runs in a worker and prepares at most one passage ahead of saving and encoding. Each audio chunk and its checkpoint commit together in IndexedDB. A Web Lock gives one tab ownership of the session. These boundaries keep Stop, Resume, reload, and competing tabs from corrupting a recording.
 
-Storage format changes start a fresh session. There are no legacy session imports, model pickers, or alternative worker message formats.
+One native audio element handles playback. Safari uses ManagedMediaSource and hands off to the saved track when generation completes, preserving playback intent, speed, and position. Saved audio stays playable after a model change; **Read aloud again** regenerates the text instead of mixing models. Requests and responses check model identity to handle tabs left open across releases.
 
-The app has no build step or runtime npm dependencies. The optional development dependencies run reproducible checks:
+## Test
+
+Requires Node 22+:
 
 ```sh
 npm ci
 npx playwright-core install chromium
-npm test
+NARRATE_TEST_ISOLATION=0 npm test
 ```
 
-Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to use an existing Chromium installation. The browser suite starts its own local server; `NARRATE_TEST_ISOLATION=0` omits isolation headers to match GitHub Pages. It controls speech arrival and injects failures while using real IndexedDB, Plyr, audio encoding, and MediaSource playback. It checks slow generation and buffering recovery, replay, speed/position through Stop and Resume, reloads, competing tabs, interrupted writes, GPU/worker errors, late player loading, 10,000-word completion, and bounded native buffering. The native player checks also encode over an hour of audio and exercise rapid seeking, short final frames, cancellation, and decoder failure. These regressions use local player assets and need no CDN or model download.
+`npm test` checks worker failures, finite PCM, number expansion, context limits, session ownership, atomic storage, model changes, playback controls, buffering recovery, and long narrations. Browser tests control speech arrival while using real IndexedDB, Plyr, audio encoders, and media buffers. They run without model downloads. A numeric regression also verifies the Kitten runtime's memory optimization against its original source.
 
-Mobile regressions cover interrupted and denied Play requests, an explicit Pause before speech arrives, and the completed managed-stream handoff. A codec-selection regression runs the vendored encoder with an AAC-LC-only capability stub to catch its default choice of HE-AAC at 24 kHz. Native boundary tests inject timestamp offsets into real SourceBuffers to check small leading gaps, backward seeks, final audio frames, and buffering when the managed streaming hint is inactive. These use Chromium's native codecs and simulated managed lifecycle flags; they do not substitute for physical Safari testing.
-
-The same regression suite runs on GitHub for pushes and pull requests without isolation headers. Successful runs on `main` publish the static app and vendored license notices to GitHub Pages. The custom domain is configured in the repository's Pages settings. Browser sessions and model caches belong to the domain; moving from the former `narrate-sh.pages.dev` address starts a separate local session.
-
-`npm run test:model` separately downloads the pinned Micro model and exercises the real worker and WebGPU pipeline. It can take several minutes and reports a skipped test if WebGPU or native streaming is unavailable. Set `NARRATE_SOFTWARE_WEBGPU=1` to explicitly use Chromium's software GPU for correctness checks; this is not a phone performance benchmark. `node scripts/check-worker.mjs` runs the worker protocol and PCM validation checks without browser dependencies.
-
-Open `scripts/check-playback.html` on a local server or HTTPS host for the same native player checks on a physical device. Each button provides the playback gesture needed on iPhone; no model download is required for these generated-tone checks.
-
-Validation includes actual Micro inference and playback through Chromium software WebGPU, plus a 10,000-word flow with simulated speech and real audio encoding/streaming. Physical iPhone testing of Safari's AAC/ManagedMediaSource path and sustained generation is still needed. Voice quality also depends on the dictionary/rules pronunciation frontend, which does not resolve every contextual pronunciation.
-
-To measure the actual phone, open [narrate.sh with timings](https://narrate.sh/?diagnostics=1), start a narration, and use **Playback timings → Save timings**. This opt-in module records the model identity, worker durations, source character counts, first observed playback progress, native waits, rate changes, and visibility changes. Its JSON contains neither narration text nor audio. Initialization includes adapter/runtime imports and model loading; generation timings exclude initialization but can still include first-use compilation. Returned passages can include one lookahead result discarded by Stop. Native wait time can include background interruptions and source changes; it is not automatically GPU starvation. Playback clock progress cannot prove that sound reached the speaker. New session clears the measurements, and Resume begins a separate run.
-
-Compare buffering methods using synthetic cases or an exported timing report:
+Run the actual model and native playback separately:
 
 ```sh
-npm run benchmark:buffer
-npm run --silent benchmark:buffer -- --trace /path/to/narrate-timings.json --json
+NARRATE_TEST_ISOLATION=0 npm run test:model
 ```
 
-This developer CLI simulates playback from PCM arrival times; it does not change the site or measure a phone itself. It states its encoding/fragment assumptions and rejects incomplete, resumed, backgrounded or actively interrupted traces it cannot model. The experiment found earlier starts but worse interruptions after unexpected slow inference, so production retains its ten-second reserve. See [the mobile review](MOBILE_REVIEW.md) for results and sources.
+This downloads the model and can take several minutes. It checks playback before generation finishes and validates the saved audio. Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` for an existing Chromium installation. `NARRATE_SOFTWARE_WEBGPU=1` explicitly permits software WebGPU for correctness testing; those timings do not measure phone performance.
 
-For voice comparisons, open the [model audition tool](https://narrate.sh/scripts/audition.html) on the target device, or run the same real worker from the CLI:
+`scripts/check-playback.html` is a local test fixture for native playback and Safari-style stream completion. Automated checks cannot judge pronunciation or prove sound reached a phone's speaker. Before release, listen on a physical iPhone and check initial Play, Pause, seeking, Stop/Resume, reload, and completed-track playback.
+
+## Maintain and publish
+
+Model and runtime revisions are pinned, with natural 1× synthesis. They do not update automatically. Keep the generation identity consistent with the selected weights, voice, and adapter behavior; a changed identity safely requires regeneration of existing audio. Deployment import queries control browser caching separately from model compatibility.
+
+The scripts below rebuild only the bundled dependencies from pinned upstream sources (Node 22+, network access, and `tar` required):
 
 ```sh
-npm run audition -- --corpus standard --repeats 3 --pace 1 --seed 42 --out /tmp/narrate-audition
+node scripts/vendor-kitten.mjs
+node scripts/vendor-media.mjs
+node scripts/vendor-plyr.mjs
 ```
 
-The tool warms each synthesis rate, rotates the comparison order, and saves a JSON report, raw WAV samples, and `review.html`. It requests a screen wake lock while generating and flags reports when the page was backgrounded, which may affect timings. Use `--corpus smoke --repeats 1` for a short correctness check, `--text "A custom passage."` for a specific pronunciation, and `--help` for options. `--software-gpu` explicitly opts into SwiftShader when no hardware adapter is available; those timings are not mobile performance evidence. The tool uses the existing Playwright development dependency and starts its own server. Match production hosting with `NARRATE_TEST_ISOLATION=0`.
+Preserve the license and source notices beside those assets. The Kitten pronunciation data, runtime, model, audio packaging library, and player retain their respective upstream licenses.
 
-Listen using the audition page or generated review page: these apply `targetRate / synthesisRate` to compare at the same nominal pace. Raw WAV files played separately have no playback-rate metadata. A/B/C labels hide the synthesis rates until revealed. The report includes the model/voice identity and audition corpus and is saved locally; nothing is uploaded. Empty or suspect signal checks do not rate pronunciation, naturalness, or fatigue.
-
-`signal.quietEdges` estimates leading and trailing waveform quiet time using 10 ms RMS windows below -60 dBFS. These raw-audio durations must be divided by the recorded playback rate for listening time. Internal pauses are excluded; an entirely quiet recording reports its full duration at both edges. This helps distinguish generated pauses from the native player waits recorded by diagnostics. It does not identify words or justify trimming quiet consonants, and never changes the audio.
-
-Evaluate whether words and numbers are complete, pronunciations are correct in context, pauses and sentence joins are natural, and the voice remains comfortable over several minutes. Compare the same passages before revealing rates. Automated tests establish signal and player correctness; choosing a better voice still needs listening. Accept a speed change only after that comparison and a sustained test on the physical iPhone, including first Play, 1.5× playback, underflow recovery, screen lock, Stop/Resume, and the final saved-track handoff.
-
-See [the mobile review](MOBILE_REVIEW.md) for measured changes and source-linked experiments to evaluate next.
-
-Compare different architectures using the separate [experimental voice comparison](https://narrate.sh/scripts/compare-models.html). It defaults to the production Kitten Micro model. Inflect Micro v2 and Pocket TTS on WebGPU or CPU/WASM remain optional candidates at natural 1× synthesis and playback, with blinded listening labels. See [model comparison notes](MODEL_COMPARISON.md) for checkpoint pins, compatibility findings and limitations.
-
-```sh
-npm run compare:models -- --corpus standard --repeats 1 --seed 42 --out /tmp/narrate-models
-```
-
-Use `--models kitten,pocket-cpu` to select candidates or `--corpus smoke` for a short probe. The optional `pocket-cpu` candidate uses the approximately 237 MB Alba checkpoint on CPU/WASM without requiring WebGPU. It is an explicit developer experiment, not a production fallback. The optional `pocket-f32` candidate explicitly uses FP32 WebGPU on adapters without shader-f16; it uses more memory and is never selected automatically. Model workers run sequentially to limit memory, with one excluded warmup per model. The CLI saves raw WAVs, a blinded `review.html`, and a report including failures; a failed candidate produces a nonzero exit status while preserving successful recordings. This is a developer experiment: it can download large models and fail on unsupported devices. Reproduce the additional runtimes with `node scripts/vendor-inflect.mjs` and `node scripts/vendor-pocket.mjs`. Neither is imported by the main app. The original saved A/B/C recordings and checkpoint identities remain unchanged.
+GitHub Actions runs the tests on pushes and pull requests. Passing `main` builds publish the application files and required vendor assets to GitHub Pages at [narrate.sh](https://narrate.sh/). Test fixtures and development scripts are excluded from the published site.
